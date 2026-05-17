@@ -38,6 +38,7 @@ staticfiles/
 
 # Test and coverage
 .pytest_cache/
+test.sqlite3
 .coverage
 .coverage.*
 htmlcov/

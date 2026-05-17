@@ -17,7 +17,8 @@ from router.services.cancellable_upstream import CancellableUpstreamRequest
 from router.services.disconnect import DisconnectWatcher
 from router.services.opencode import OpencodeVersionService
 from router.services.request_logger import append_request_log
-from router.services.server_chooser import LeastConnectionServerChooser, ServerSelectionContext
+from router.route_algorithm.base import ServerSelectionContext
+from router.route_algorithm.least_connection import LeastConnectionServerChooser
 from router.utils.errors import error_payload, timeout_sse_event
 from router.utils.headers import filter_request_headers, filter_response_headers
 from router.utils.sse import parse_sse_usage
@@ -32,7 +33,7 @@ class ProxyService:
         self.max_attempts_per_request = int(lb_config.get("max_attempts_per_request", 3))
         self.retry_status_codes = {int(code) for code in lb_config.get("retry_status_codes", [502, 503, 504])}
         self.mark_unhealthy_status_codes = {int(code) for code in lb_config.get("mark_unhealthy_status_codes", [502, 503, 504])}
-        self.chooser = chooser or self._load_chooser(str(lb_config.get("chooser_class", "router.services.server_chooser.LeastConnectionServerChooser")))
+        self.chooser = chooser or self._load_chooser(str(lb_config.get("chooser_class", "router.route_algorithm.least_connection.LeastConnectionServerChooser")))
         self.stream_timeout = (
             float(proxy_config.get("stream_connect_timeout_seconds", 30)),
             float(proxy_config.get("stream_read_timeout_seconds", 900)),
@@ -140,6 +141,7 @@ class ProxyService:
 
                     self._maybe_log_multi_server_route(record.id, attempted_server_ids, server.id)
                     self._maybe_delay_opencode_400(user_agent, upstream.status_code)
+                    self._notify_chooser_response(server, context, upstream.status_code)
                     input_tokens, output_tokens = self._parse_json_usage(content)
                     final_model_id = self._ensure_model_after_success(model_name, upstream.status_code)
                     RequestRepository.finish(
@@ -242,6 +244,7 @@ class ProxyService:
                                 yielded = True
                                 chunks.append(chunk)
                                 yield chunk
+                        self._notify_chooser_response(server, context, status_code)
                         input_tokens, output_tokens = parse_sse_usage(chunks)
                         final_model_id = self._ensure_model_after_success(model_name, status_code)
                         RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, final_model_id, attempt_count=attempts)
@@ -320,6 +323,20 @@ class ProxyService:
             base_url = str(APP_CONFIG.get("proxy_url", "http://localhost:8051"))
 
         return LegacyServer()
+
+    def _notify_chooser_response(self, server, context, status_code: int) -> None:
+        hook = getattr(self.chooser, "on_response", None)
+        if not hook:
+            return
+        try:
+            hook(server, context, status_code)
+        except Exception as exc:
+            append_request_log(context.request_id, json.dumps({
+                "event": "chooser_response_hook_error",
+                "server_id": getattr(server, "id", None),
+                "status_code": status_code,
+                "reason": str(exc)[:500],
+            }, ensure_ascii=False))
 
     @staticmethod
     def _mark_unhealthy(server) -> None:

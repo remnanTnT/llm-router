@@ -72,6 +72,7 @@ class Server(TimestampedSoftDeleteModel):
     health_path = models.CharField(max_length=200, blank=True, default="/healthy")
     last_checked_at = models.DateTimeField(blank=True, null=True)
     last_failure_at = models.DateTimeField(blank=True, null=True)
+    cache_time = models.IntegerField(default=3600)
 
     class Meta:
         managed = False

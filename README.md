@@ -72,6 +72,7 @@ CREATE TABLE servers (
     health_path VARCHAR(200) NOT NULL DEFAULT '/healthy',
     last_checked_at TIMESTAMPTZ NULL,
     last_failure_at TIMESTAMPTZ NULL,
+    cache_time INTEGER NOT NULL DEFAULT 3600,
     created_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NULL,
     deleted_at TIMESTAMPTZ NULL
@@ -85,6 +86,7 @@ CREATE INDEX servers_online_model_idx
 The load balancer also records the selected backend and number of backend attempts per request:
 
 ```sql
+ALTER TABLE servers ADD COLUMN cache_time INTEGER NOT NULL DEFAULT 3600;
 ALTER TABLE requests ALTER COLUMN target_pod_ip TYPE VARCHAR(500);
 ALTER TABLE requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
 ```
@@ -117,7 +119,12 @@ load_balancer:
   retry_status_codes: [502, 503, 504]
   mark_unhealthy_status_codes: [502, 503, 504]
   health_check_timeout_seconds: 2
-  chooser_class: router.services.server_chooser.LeastConnectionServerChooser
+  chooser_class: router.route_algorithm.prefix_cache_preble.PrefixCachePrebleServerChooser
+
+prefix_cache:
+  primary_match_threshold: 0.9
+  secondary_match_threshold: 0.5
+  max_prefix_tokens: 100000
 
 opencode:
   enabled: true
@@ -156,6 +163,8 @@ Other useful environment variables:
 export DJANGO_SECRET_KEY='change-me'
 export DJANGO_DEBUG=0
 export PROXY_URL=http://localhost:8051
+export PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD=0.9
+export PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD=0.5
 ```
 
 ## Local Setup
@@ -293,7 +302,7 @@ VALUES
   (8, 'http://10.0.0.20:8000', true);
 ```
 
-The default chooser is least-connection: before each backend attempt, the router records the server `base_url` in `target_pod_ip` and records `attempt_count` on the processing request row, then chooses the online server for that model with the fewest currently processing requests.
+The default chooser is prefix-cache-preble: before each backend attempt, the router records the server `base_url` in `target_pod_ip` and records `attempt_count` on the processing request row. If prefix `match_ratio > prefix_cache.primary_match_threshold` (`0.9` by default), it chooses the least-loaded cached server; otherwise it chooses the least-loaded online server. The secondary threshold is configured with `prefix_cache.secondary_match_threshold` (`0.5` by default). These can be overridden with `PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD` and `PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD`. Prefix cache metadata is marked only after a successful response completes.
 
 Use `python manage.py check_server_health --recover-offline` from cron or a scheduler to actively probe server health. Passive request failures also mark servers offline and the router retries another online candidate when it is still safe to do so.
 

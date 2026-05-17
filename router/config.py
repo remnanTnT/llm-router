@@ -30,7 +30,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "retry_status_codes": [502, 503, 504],
         "mark_unhealthy_status_codes": [502, 503, 504],
         "health_check_timeout_seconds": 2,
-        "chooser_class": "router.services.server_chooser.LeastConnectionServerChooser",
+        "chooser_class": "router.route_algorithm.prefix_cache_preble.PrefixCachePrebleServerChooser",
+    },
+    "prefix_cache": {
+        "primary_match_threshold": 0.9,
+        "secondary_match_threshold": 0.5,
+        "max_prefix_tokens": 100000,
     },
     "opencode": {
         "enabled": True,
@@ -81,6 +86,10 @@ def load_config() -> dict[str, Any]:
             database[config_key] = os.environ[env_key]
     if "PROXY_URL" in os.environ:
         config["proxy_url"] = os.environ["PROXY_URL"]
+    if "PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD" in os.environ:
+        config.setdefault("prefix_cache", {})["primary_match_threshold"] = os.environ["PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD"]
+    if "PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD" in os.environ:
+        config.setdefault("prefix_cache", {})["secondary_match_threshold"] = os.environ["PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD"]
     return config
 
 

@@ -23,7 +23,12 @@ load_balancer:
   retry_status_codes: [502, 503, 504]
   mark_unhealthy_status_codes: [502, 503, 504]
   health_check_timeout_seconds: 2
-  chooser_class: router.services.server_chooser.LeastConnectionServerChooser
+  chooser_class: router.route_algorithm.prefix_cache_preble.PrefixCachePrebleServerChooser
+
+prefix_cache:
+  primary_match_threshold: 0.9
+  secondary_match_threshold: 0.5
+  max_prefix_tokens: 100000
 
 opencode:
   enabled: true

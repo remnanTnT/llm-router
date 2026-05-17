@@ -1,0 +1,12 @@
+from router.config import load_config
+
+
+def test_prefix_cache_threshold_env_overrides(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_ROUTER_CONFIG", str(tmp_path / "missing.yaml"))
+    monkeypatch.setenv("PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD", "0.95")
+    monkeypatch.setenv("PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD", "0.45")
+
+    config = load_config()
+
+    assert config["prefix_cache"]["primary_match_threshold"] == "0.95"
+    assert config["prefix_cache"]["secondary_match_threshold"] == "0.45"
