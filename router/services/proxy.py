@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import random
 import threading
 import time
 from urllib.parse import urljoin
@@ -61,7 +62,7 @@ class ProxyService:
             body=parsed.body,
         )
         if self.load_balancer_enabled:
-            candidates = ServerRepository.list_by_model_id(model_id)
+            candidates = self._candidates_for_request(path, model_id)
             if not candidates:
                 RequestRepository.finish(record, 503, "Service Unavailable")
                 return HttpResponse(
@@ -81,6 +82,12 @@ class ProxyService:
         if query_string:
             url = f"{url}?{query_string}"
         return url
+
+    def _candidates_for_request(self, path: str, model_id: int | None):
+        if path.rstrip("/") == "models" and model_id is None:
+            candidates = ServerRepository.list_all_online()
+            return [random.choice(candidates)] if candidates else []
+        return ServerRepository.list_by_model_id(model_id)
 
     def _handle_normal(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context):
         disconnect_event = threading.Event()

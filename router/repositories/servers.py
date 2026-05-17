@@ -16,6 +16,10 @@ class ServerRepository:
         return list(queryset.order_by("id"))
 
     @staticmethod
+    def list_all_online() -> list[Server]:
+        return list(Server.objects.filter(deleted_at__isnull=True, is_online=True).order_by("id"))
+
+    @staticmethod
     def list_all_active() -> list[Server]:
         return list(Server.objects.filter(deleted_at__isnull=True).order_by("id"))
 
