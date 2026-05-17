@@ -1,3 +1,5 @@
+from collections.abc import Iterable
+
 from router.models import Model
 
 
@@ -14,3 +16,15 @@ class ModelRepository:
             model_name=model_name,
             defaults={"concurrent_limit": 3, "max_tokens": 20480},
         )
+
+    @staticmethod
+    def list_all() -> list[Model]:
+        return list(Model.objects.all().order_by("id"))
+
+    @staticmethod
+    def get_by_names(model_names: list[str]) -> dict[str, Model]:
+        return {model.model_name: model for model in Model.objects.filter(model_name__in=model_names)}
+
+    @staticmethod
+    def get_by_ids(model_ids: Iterable[int]) -> dict[int, Model]:
+        return {model.id: model for model in Model.objects.filter(id__in=list(model_ids))}

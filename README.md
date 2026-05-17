@@ -25,12 +25,12 @@ Implemented in this phase:
 - Request lifecycle recording in the existing `requests` table
 - Dummy CMDB service and `/api/refresh_user_info`
 - Whitelist update API
+- Statistics APIs
+- AI Assistant download API
 
 Not implemented in this phase:
 
-- Statistics APIs
 - Admin UI
-- Download API
 - Database schema migrations that alter tables
 - Real CMDB integration
 - Redis-based concurrency counters
@@ -304,6 +304,32 @@ curl -i http://localhost:8001/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+### Statistics APIs
+
+```http
+GET /api/request_stats
+GET /api/total_request_count
+GET /api/model_request_stats
+GET /api/all_model_request_stats
+GET /api/models
+GET /api/model_info
+GET /api/request_time_stats
+GET /api/model_request_time_stats
+GET /api/model_request_count_by_period
+GET /api/model_ip_count_by_period
+GET /api/model_latency_boxplot
+```
+
+Statistics endpoints use query-string parameters. Time ranges use Beijing-local `YYYY-MM-DD HH:mm:ss` values.
+
+### AI Assistant Download
+
+```http
+GET /api/download/ai_assistant
+```
+
+Downloads `/home/AI_Assistant/AI_Assistant.exe` as `application/octet-stream`.
 
 ### Whitelist Update
 
