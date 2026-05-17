@@ -1,0 +1,39 @@
+proxy_url: http://localhost:8051
+log_path: ./logs/requests
+
+server:
+  bind: 0.0.0.0:8001
+  data_upload_max_memory_size_mb: 50
+
+proxy:
+  default_max_tokens: 8528
+  unknown_model_max_tokens: 20480
+  stream_connect_timeout_seconds: 30
+  stream_read_timeout_seconds: 900
+  stream_total_timeout_seconds: 900
+  normal_connect_timeout_seconds: 5
+  normal_read_timeout_seconds: 900
+  client_disconnect_check_interval_seconds: 0.5
+  stale_processing_minutes: 20
+  opencode_400_delay_seconds: 180
+
+opencode:
+  enabled: true
+  block_max_version: "1.2.26"
+  delay_400_max_version: "1.2.27"
+
+admission:
+  allow_when_user_info_missing: true
+
+cmdb:
+  enabled: false
+  dummy: true
+  refresh_interval_between_ips_seconds: 1
+
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: postgres
+  name: postgres
+  sslmode: disable
