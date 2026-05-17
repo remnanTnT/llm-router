@@ -170,7 +170,46 @@ Expected response:
 
 Gunicorn is the recommended way to run the router outside local development.
 
-Basic command:
+Production start script:
+
+```bash
+./start_prod.sh
+```
+
+Defaults:
+
+- HTTP port: `8001`
+- Database host: `localhost`
+- Database port: `5431`
+- Workers: `8`
+- Threads per worker: `32`
+
+Test start script:
+
+```bash
+./start_test.sh
+```
+
+Defaults:
+
+- HTTP port: `9000`
+- Database host: `localhost`
+- Database port: `5432`
+- Workers: `1`
+- Threads per worker: `8`
+
+Both scripts use `config.yaml` by default and can be overridden with environment variables:
+
+```bash
+DB_HOST=127.0.0.1 \
+DB_PORT=5433 \
+LLM_ROUTER_CONFIG=/path/to/config.yaml \
+GUNICORN_WORKERS=4 \
+GUNICORN_THREADS=16 \
+./start_prod.sh
+```
+
+Equivalent production Gunicorn command:
 
 ```bash
 gunicorn router_project.wsgi:application \
@@ -184,19 +223,6 @@ gunicorn router_project.wsgi:application \
   --max-requests-jitter 200 \
   --access-logfile - \
   --error-logfile -
-```
-
-With an explicit config file:
-
-```bash
-LLM_ROUTER_CONFIG=/path/to/config.yaml \
-gunicorn router_project.wsgi:application \
-  --bind 0.0.0.0:8001 \
-  --workers 8 \
-  --threads 32 \
-  --worker-class gthread \
-  --timeout 960 \
-  --graceful-timeout 1200
 ```
 
 The `gthread` worker is important because the router includes client-disconnect tracking designed for the Gunicorn threaded worker model. For non-stream requests, the router watches the downstream client socket and closes the upstream LLM connection when the client disconnects; vLLM should then stop the abandoned request when it observes the closed connection.
