@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from django.db import models
 from django.utils import timezone
 
 from router.models import RequestRecord
@@ -20,6 +21,7 @@ class RequestRepository:
             user_agent=(user_agent or "")[:500],
             input_token_cnt=0,
             output_token_cnt=0,
+            attempt_count=0,
         )
 
     @staticmethod
@@ -46,6 +48,7 @@ class RequestRepository:
             fail_reason=fail_reason[:100],
             is_stream=is_stream,
             user_agent=(user_agent or "")[:500],
+            attempt_count=0,
         )
 
     @staticmethod
@@ -58,6 +61,7 @@ class RequestRepository:
         target_pod_ip: str | None = None,
         model_id: int | None = None,
         task_status: str | None = None,
+        attempt_count: int | None = None,
     ) -> None:
         end_time = timezone.now()
         record.end_time = end_time
@@ -68,10 +72,19 @@ class RequestRepository:
         record.input_token_cnt = input_tokens or 0
         record.output_token_cnt = output_tokens or 0
         if target_pod_ip:
-            record.target_pod_ip = target_pod_ip[:50]
+            record.target_pod_ip = target_pod_ip[:500]
         if model_id is not None:
             record.model_id = model_id
+        if attempt_count is not None:
+            record.attempt_count = attempt_count
         record.save()
+
+    @staticmethod
+    def record_attempt(record: RequestRecord, target_pod_ip: str | None, attempt_count: int) -> None:
+        record.attempt_count = attempt_count
+        if target_pod_ip:
+            record.target_pod_ip = target_pod_ip[:500]
+        record.save(update_fields=["attempt_count", "target_pod_ip"] if target_pod_ip else ["attempt_count"])
 
     @staticmethod
     def cleanup_stale(model_id: int | None = None, threshold_minutes: int = 20) -> int:
@@ -84,3 +97,14 @@ class RequestRepository:
     @staticmethod
     def count_processing(ip_id: int, model_id: int) -> int:
         return RequestRecord.objects.filter(ip_id=ip_id, model_id=model_id, task_status="processing").count()
+
+    @staticmethod
+    def count_processing_by_targets(targets: list[str]) -> dict[str, int]:
+        if not targets:
+            return {}
+        return {
+            row["target_pod_ip"]: row["count"]
+            for row in RequestRecord.objects.filter(task_status="processing", target_pod_ip__in=targets)
+            .values("target_pod_ip")
+            .annotate(count=models.Count("id"))
+        }

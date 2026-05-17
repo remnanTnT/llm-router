@@ -64,6 +64,20 @@ class Model(models.Model):
         db_table = "models"
 
 
+class Server(TimestampedSoftDeleteModel):
+    model_id = models.IntegerField(blank=True, null=True)
+    base_url = models.CharField(max_length=500, unique=True)
+    is_online = models.BooleanField(default=True)
+    weight = models.IntegerField(default=1)
+    health_path = models.CharField(max_length=200, blank=True, default="/healthy")
+    last_checked_at = models.DateTimeField(blank=True, null=True)
+    last_failure_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = "servers"
+
+
 class RequestRecord(TimestampedSoftDeleteModel):
     user_ip_id = models.IntegerField(default=1)
     ip_id = models.IntegerField(blank=True, null=True)
@@ -78,7 +92,8 @@ class RequestRecord(TimestampedSoftDeleteModel):
     fail_reason = models.CharField(max_length=100, blank=True, null=True)
     is_stream = models.BooleanField(blank=True, null=True)
     user_agent = models.CharField(max_length=500, blank=True, null=True)
-    target_pod_ip = models.CharField(max_length=50, blank=True, null=True)
+    target_pod_ip = models.CharField(max_length=500, blank=True, null=True)
+    attempt_count = models.IntegerField(default=0)
 
     class Meta:
         managed = False

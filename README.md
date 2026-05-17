@@ -56,8 +56,38 @@ The router expects these existing tables:
 - `models`
 - `requests`
 - `whitelist`
+- `servers`
 
 Django models are unmanaged (`managed = False`) and no schema-changing migrations should be generated or applied.
+
+Example `servers` table:
+
+```sql
+CREATE TABLE servers (
+    id BIGSERIAL PRIMARY KEY,
+    model_id INTEGER NULL,
+    base_url VARCHAR(500) NOT NULL UNIQUE,
+    is_online BOOLEAN NOT NULL DEFAULT TRUE,
+    weight INTEGER NOT NULL DEFAULT 1,
+    health_path VARCHAR(200) NOT NULL DEFAULT '/healthy',
+    last_checked_at TIMESTAMPTZ NULL,
+    last_failure_at TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NULL,
+    updated_at TIMESTAMPTZ NULL,
+    deleted_at TIMESTAMPTZ NULL
+);
+
+CREATE INDEX servers_online_model_idx
+    ON servers (is_online, model_id)
+    WHERE deleted_at IS NULL;
+```
+
+The load balancer also records the selected backend and number of backend attempts per request:
+
+```sql
+ALTER TABLE requests ALTER COLUMN target_pod_ip TYPE VARCHAR(500);
+ALTER TABLE requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
+```
 
 ## Configuration
 
@@ -80,6 +110,14 @@ proxy:
   client_disconnect_check_interval_seconds: 0.5
   stale_processing_minutes: 20
   opencode_400_delay_seconds: 180
+
+load_balancer:
+  enabled: true
+  max_attempts_per_request: 3
+  retry_status_codes: [502, 503, 504]
+  mark_unhealthy_status_codes: [502, 503, 504]
+  health_check_timeout_seconds: 2
+  chooser_class: router.services.server_chooser.LeastConnectionServerChooser
 
 opencode:
   enabled: true
@@ -243,7 +281,21 @@ Returns `200` when the app and database are healthy. Returns `503` when the data
 /v1/<path>
 ```
 
-All `/v1/*` requests are proxied to `proxy_url` with the same path and query string.
+All `/v1/*` requests are proxied to an online row from `servers` for the request `model_id` with the same path and query string. `proxy_url` remains as a legacy fallback when `load_balancer.enabled` is disabled.
+
+Example server rows:
+
+```sql
+INSERT INTO servers (model_id, base_url, is_online)
+VALUES
+  (7, 'http://10.0.0.11:8000', true),
+  (7, 'http://10.0.0.12:8000', true),
+  (8, 'http://10.0.0.20:8000', true);
+```
+
+The default chooser is least-connection: before each backend attempt, the router records the server `base_url` in `target_pod_ip` and records `attempt_count` on the processing request row, then chooses the online server for that model with the fewest currently processing requests.
+
+Use `python manage.py check_server_health --recover-offline` from cron or a scheduler to actively probe server health. Passive request failures also mark servers offline and the router retries another online candidate when it is still safe to do so.
 
 Example:
 
