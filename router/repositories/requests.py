@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db import models
 from django.utils import timezone
@@ -108,3 +108,72 @@ class RequestRepository:
             .values("target_pod_ip")
             .annotate(count=models.Count("id"))
         }
+
+    @staticmethod
+    def count_distinct_ips(start: datetime, end: datetime) -> int:
+        return RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, ip_id__isnull=False).values("ip_id").distinct().count()
+
+    @staticmethod
+    def count_success_requests(start: datetime, end: datetime) -> int:
+        return RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success").count()
+
+    @staticmethod
+    def count_success_requests_by_model(start: datetime, end: datetime, model_id: int) -> int:
+        return RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success", model_id=model_id).count()
+
+    @staticmethod
+    def count_success_requests_grouped_by_model(start: datetime, end: datetime, model_ids: list[int]) -> dict[int, int]:
+        if not model_ids:
+            return {}
+        return {
+            row["model_id"]: row["count"]
+            for row in RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success", model_id__in=model_ids)
+            .values("model_id")
+            .annotate(count=models.Count("id"))
+        }
+
+    @staticmethod
+    def average_latency_by_bucket(start: datetime, end: datetime, bucket_expr, model_id: int | None = None) -> dict:
+        qs = RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success", latency__isnull=False)
+        if model_id is not None:
+            qs = qs.filter(model_id=model_id)
+        return {
+            row["bucket"]: row["avg_latency"]
+            for row in qs.annotate(bucket=bucket_expr).values("bucket").annotate(avg_latency=models.Avg("latency")).order_by("bucket")
+        }
+
+    @staticmethod
+    def count_success_by_bucket(start: datetime, end: datetime, model_id: int, bucket_expr) -> dict:
+        return {
+            row["bucket"]: row["count"]
+            for row in RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success", model_id=model_id)
+            .annotate(bucket=bucket_expr)
+            .values("bucket")
+            .annotate(count=models.Count("id"))
+            .order_by("bucket")
+        }
+
+    @staticmethod
+    def count_distinct_ips_by_bucket(start: datetime, end: datetime, model_id: int, bucket_expr) -> dict:
+        return {
+            row["bucket"]: row["count"]
+            for row in RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, model_id=model_id, ip_id__isnull=False)
+            .annotate(bucket=bucket_expr)
+            .values("bucket")
+            .annotate(count=models.Count("ip_id", distinct=True))
+            .order_by("bucket")
+        }
+
+    @staticmethod
+    def latency_rows_for_boxplot(start: datetime, end: datetime, model_ids: list[int]) -> list[dict]:
+        if not model_ids:
+            return []
+        return list(
+            RequestRecord.objects.filter(
+                send_time__gte=start,
+                send_time__lte=end,
+                task_status="success",
+                latency__isnull=False,
+                model_id__in=model_ids,
+            ).values("model_id", "send_time", "latency")
+        )
