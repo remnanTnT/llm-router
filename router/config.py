@@ -24,6 +24,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "stale_processing_minutes": 20,
         "opencode_400_delay_seconds": 180,
     },
+    "load_balancer": {
+        "enabled": True,
+        "max_attempts_per_request": 3,
+        "retry_status_codes": [502, 503, 504],
+        "mark_unhealthy_status_codes": [502, 503, 504],
+        "health_check_timeout_seconds": 2,
+        "chooser_class": "router.services.server_chooser.LeastConnectionServerChooser",
+    },
     "opencode": {
         "enabled": True,
         "block_max_version": "1.2.26",

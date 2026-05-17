@@ -10,7 +10,7 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true")
 
     def handle(self, *args, **options):
-        required = ["ips", "departments", "user_ips", "user_visit_counts", "models", "requests", "whitelist"]
+        required = ["ips", "departments", "user_ips", "user_visit_counts", "models", "requests", "whitelist", "servers"]
         with connection.cursor() as cursor:
             existing = set(connection.introspection.table_names(cursor))
         missing = [name for name in required if name not in existing]
