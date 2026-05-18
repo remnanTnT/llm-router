@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+import pytest
+
 from router.route_algorithm.base import ServerSelectionContext
 from router.route_algorithm.least_connection import LeastConnectionServerChooser
 from router.route_algorithm.prefix_cache_preble import PrefixCachePrebleServerChooser
@@ -80,7 +82,7 @@ def test_prefix_cache_high_match_chooses_least_loaded_cached_server():
     selected = chooser.choose(candidates, context, set())
 
     assert selected.id == 2
-    assert context.prefix_cache == 0.99
+    assert context.prefix_cache == pytest.approx(100 / 101)
 
 
 def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
@@ -99,7 +101,7 @@ def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
     selected = chooser.choose(candidates, context, set())
 
     assert selected.id == 1
-    assert context.prefix_cache == 0.6
+    assert context.prefix_cache == pytest.approx(61 / 101)
 
 
 def test_prefix_cache_response_hook_only_marks_successful_responses():

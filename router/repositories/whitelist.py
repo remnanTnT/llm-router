@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from django.utils import timezone
 
 from router.models import Whitelist
