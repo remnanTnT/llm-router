@@ -20,7 +20,15 @@ def api_test_tables():
         for model in (Model, RequestRecord, Server, Whitelist):
             if model._meta.db_table not in existing_tables:
                 schema_editor.create_model(model)
+        if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "last_match"):
+            schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("last_match"))
     yield
+
+
+def has_column(table, column):
+    with connection.cursor() as cursor:
+        description = connection.introspection.get_table_description(cursor, table)
+    return column in {item.name for item in description}
 
 
 @pytest.fixture(autouse=True)

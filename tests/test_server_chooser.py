@@ -22,9 +22,9 @@ def make_server(server_id, base_url, cache_time=3600):
     return Server(id=server_id, base_url=base_url, cache_time=cache_time)
 
 
-def make_context(body: bytes = b"{}"):
+def make_context(body: bytes = b"{}", request_id: int = 1):
     return ServerSelectionContext(
-        request_id=1,
+        request_id=request_id,
         ip_id=None,
         model_id=None,
         model_name="test-model",
@@ -75,14 +75,15 @@ def test_prefix_cache_high_match_chooses_least_loaded_cached_server():
         make_server(3, "http://10.0.0.3:8000"),
     ]
     cached_body = make_body([str(i) for i in range(100)])
-    chooser.on_response(candidates[0], make_context(cached_body), 200)
-    chooser.on_response(candidates[1], make_context(cached_body), 200)
+    chooser.on_response(candidates[0], make_context(cached_body, request_id=101), 200)
+    chooser.on_response(candidates[1], make_context(cached_body, request_id=102), 200)
 
     context = make_context(make_body([str(i) for i in range(99)] + ["new"]))
     selected = chooser.choose(candidates, context, set())
 
     assert selected.id == 2
     assert context.prefix_cache == pytest.approx(100 / 101)
+    assert context.last_match == 102
 
 
 def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
@@ -95,13 +96,41 @@ def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
         make_server(2, "http://10.0.0.2:8000"),
         make_server(3, "http://10.0.0.3:8000"),
     ]
-    chooser.on_response(candidates[1], make_context(make_body([str(i) for i in range(60)])), 200)
+    chooser.on_response(candidates[1], make_context(make_body([str(i) for i in range(60)]), request_id=201), 200)
 
     context = make_context(make_body([str(i) for i in range(60)] + [f"new-{i}" for i in range(40)]))
     selected = chooser.choose(candidates, context, set())
 
     assert selected.id == 1
     assert context.prefix_cache == pytest.approx(61 / 101)
+    assert context.last_match == 201
+
+
+def test_prefix_cache_last_match_tracks_best_match_request_id():
+    PrefixCachePrebleServerChooser._prefix_cache = {}
+    chooser = PrefixCachePrebleServerChooser(lambda targets: {})
+    candidates = [make_server(1, "http://10.0.0.1:8000")]
+    chooser.on_response(candidates[0], make_context(make_body(["a", "b", "x"]), request_id=301), 200)
+    chooser.on_response(candidates[0], make_context(make_body(["a", "b", "c", "d"]), request_id=302), 200)
+
+    context = make_context(make_body(["a", "b", "c", "new"]))
+    chooser.choose(candidates, context, set())
+
+    assert context.prefix_cache == pytest.approx(4 / 5)
+    assert context.last_match == 302
+
+
+def test_prefix_cache_last_match_is_none_without_common_prefix():
+    PrefixCachePrebleServerChooser._prefix_cache = {}
+    chooser = PrefixCachePrebleServerChooser(lambda targets: {})
+    candidates = [make_server(1, "http://10.0.0.1:8000")]
+    chooser.on_response(candidates[0], make_context(b"hello world", request_id=401), 200)
+
+    context = make_context(b"goodbye world")
+    chooser.choose(candidates, context, set())
+
+    assert context.prefix_cache == 0.0
+    assert context.last_match is None
 
 
 def test_prefix_cache_response_hook_only_marks_successful_responses():

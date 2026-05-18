@@ -15,6 +15,7 @@ class ServerSelectionContext:
     is_stream: bool
     body: bytes
     prefix_cache: float = 0.0
+    last_match: int | None = None
 
 
 class ServerChooser(Protocol):
