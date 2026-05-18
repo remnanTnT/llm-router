@@ -120,7 +120,7 @@ class ProxyService:
                 attempts += 1
                 upstream_url = self._build_url(server.base_url, path, django_request.META.get("QUERY_STRING", ""))
                 target_pod_ip = self._target_identifier(server)
-                RequestRepository.record_attempt(record, target_pod_ip, attempts)
+                RequestRepository.record_attempt(record, target_pod_ip, attempts, getattr(context, "prefix_cache", None))
                 try:
                     upstream = upstream_client.request(
                         django_request.method,
@@ -216,7 +216,7 @@ class ProxyService:
                 attempts += 1
                 upstream_url = self._build_url(server.base_url, path, django_request.META.get("QUERY_STRING", ""))
                 target_pod_ip = self._target_identifier(server)
-                RequestRepository.record_attempt(record, target_pod_ip, attempts)
+                RequestRepository.record_attempt(record, target_pod_ip, attempts, getattr(context, "prefix_cache", None))
                 try:
                     with requests.request(
                         django_request.method,

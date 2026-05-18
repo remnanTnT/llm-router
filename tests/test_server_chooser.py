@@ -76,9 +76,11 @@ def test_prefix_cache_high_match_chooses_least_loaded_cached_server():
     chooser.on_response(candidates[0], make_context(cached_body), 200)
     chooser.on_response(candidates[1], make_context(cached_body), 200)
 
-    selected = chooser.choose(candidates, make_context(make_body([str(i) for i in range(99)] + ["new"])), set())
+    context = make_context(make_body([str(i) for i in range(99)] + ["new"]))
+    selected = chooser.choose(candidates, context, set())
 
     assert selected.id == 2
+    assert context.prefix_cache == 0.99
 
 
 def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
@@ -93,9 +95,11 @@ def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
     ]
     chooser.on_response(candidates[1], make_context(make_body([str(i) for i in range(60)])), 200)
 
-    selected = chooser.choose(candidates, make_context(make_body([str(i) for i in range(60)] + [f"new-{i}" for i in range(40)])), set())
+    context = make_context(make_body([str(i) for i in range(60)] + [f"new-{i}" for i in range(40)]))
+    selected = chooser.choose(candidates, context, set())
 
     assert selected.id == 1
+    assert context.prefix_cache == 0.6
 
 
 def test_prefix_cache_response_hook_only_marks_successful_responses():
