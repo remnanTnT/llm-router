@@ -42,6 +42,8 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
 
         request_tokens = self._tokens_from_body(context.body)
         if not request_tokens:
+            context.prefix_cache = 0.0
+            context.last_match = None
             return self._choose_least_loaded(available)
 
         model_key = context.model_name or str(context.model_id or "")
@@ -50,6 +52,7 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         now = timezone.now()
         cached_matches = []
         best_match_ratio = 0.0
+        best_match_request_id = None
 
         with self._cache_lock:
             entries = self._prefix_cache.get(model_key, [])
@@ -61,7 +64,9 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
                 if not common:
                     continue
                 match_ratio = common / len(request_tokens)
-                best_match_ratio = max(best_match_ratio, match_ratio)
+                if match_ratio > best_match_ratio:
+                    best_match_ratio = match_ratio
+                    best_match_request_id = entry.get("request_id")
                 if match_ratio > self.primary_match_threshold:
                     for server_id in entry["server_cached_at"]:
                         server = available_by_id.get(server_id)
@@ -69,6 +74,7 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
                             cached_matches.append(server)
 
         context.prefix_cache = best_match_ratio
+        context.last_match = best_match_request_id
         if cached_matches:
             unique_cached = {server.id: server for server in cached_matches}.values()
             return self._choose_least_loaded(list(unique_cached))
@@ -92,8 +98,9 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             for entry in entries:
                 if entry["tokens"] == request_tokens:
                     entry["server_cached_at"][server.id] = now
+                    entry["request_id"] = context.request_id
                     return
-            entries.append({"tokens": request_tokens, "server_cached_at": {server.id: now}})
+            entries.append({"tokens": request_tokens, "request_id": context.request_id, "server_cached_at": {server.id: now}})
 
     def _evict_expired(self, entry: dict[str, Any], servers_by_id: dict[int, Any], now) -> None:
         expired = []

@@ -93,6 +93,7 @@ ALTER TABLE servers ADD COLUMN cache_time INTEGER NOT NULL DEFAULT 3600;
 ALTER TABLE requests ALTER COLUMN target_pod_ip TYPE VARCHAR(500);
 ALTER TABLE requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN prefix_cache DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE requests ADD COLUMN last_match BIGINT NULL;
 ```
 
 ## Configuration
@@ -306,7 +307,7 @@ VALUES
   (8, 'http://10.0.0.20:8000', true);
 ```
 
-The default chooser is prefix-cache-preble: before each backend attempt, the router records the server `base_url` in `target_pod_ip`, records `attempt_count`, and records the best prefix-cache `match_ratio` in `prefix_cache` on the processing request row. If prefix `match_ratio > prefix_cache.primary_match_threshold` (`0.9` by default), it chooses the least-loaded cached server; otherwise it chooses the least-loaded online server. The secondary threshold is configured with `prefix_cache.secondary_match_threshold` (`0.5` by default). These can be overridden with `PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD` and `PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD`. Prefix cache metadata is marked only after a successful response completes.
+The default chooser is prefix-cache-preble: before each backend attempt, the router records the server `base_url` in `target_pod_ip`, records `attempt_count`, records the best prefix-cache `match_ratio` in `prefix_cache`, and records the historical request id that produced that best match in `last_match` (`NULL` when there is no match) on the processing request row. If prefix `match_ratio > prefix_cache.primary_match_threshold` (`0.9` by default), it chooses the least-loaded cached server; otherwise it chooses the least-loaded online server. The secondary threshold is configured with `prefix_cache.secondary_match_threshold` (`0.5` by default). These can be overridden with `PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD` and `PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD`. Prefix cache metadata is marked only after a successful response completes.
 
 Use `python manage.py check_server_health --recover-offline` from cron or a scheduler to actively probe server health. Passive request failures also mark servers offline and the router retries another online candidate when it is still safe to do so.
 

@@ -23,6 +23,7 @@ class RequestRepository:
             output_token_cnt=0,
             attempt_count=0,
             prefix_cache=0.0,
+            last_match=None,
         )
 
     @staticmethod
@@ -51,6 +52,7 @@ class RequestRepository:
             user_agent=(user_agent or "")[:500],
             attempt_count=0,
             prefix_cache=0.0,
+            last_match=None,
         )
 
     @staticmethod
@@ -94,7 +96,13 @@ class RequestRepository:
         record.save(update_fields=update_fields)
 
     @staticmethod
-    def record_attempt(record: RequestRecord, target_pod_ip: str | None, attempt_count: int, prefix_cache: float | None = None) -> None:
+    def record_attempt(
+        record: RequestRecord,
+        target_pod_ip: str | None,
+        attempt_count: int,
+        prefix_cache: float | None = None,
+        last_match: int | None = None,
+    ) -> None:
         record.attempt_count = attempt_count
         update_fields = ["attempt_count"]
         if target_pod_ip:
@@ -103,6 +111,8 @@ class RequestRepository:
         if prefix_cache is not None:
             record.prefix_cache = prefix_cache
             update_fields.append("prefix_cache")
+        record.last_match = last_match
+        update_fields.append("last_match")
         record.save(update_fields=update_fields)
 
     @staticmethod
