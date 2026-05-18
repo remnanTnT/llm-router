@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 
 
 class TimestampedSoftDeleteModel(models.Model):
@@ -90,6 +91,38 @@ class RequestRecord(TimestampedSoftDeleteModel):
     class Meta:
         managed = False
         db_table = "requests"
+        indexes = [
+            models.Index(
+                name="idx_requests_concurrent_count",
+                fields=["ip_id", "model_id"],
+                condition=Q(task_status="processing"),
+            ),
+            models.Index(
+                name="idx_requests_processing_model_send",
+                fields=["model_id", "send_time"],
+                condition=Q(task_status="processing"),
+            ),
+            models.Index(
+                name="idx_requests_processing_target",
+                fields=["target_pod_ip"],
+                condition=Q(task_status="processing"),
+            ),
+            models.Index(
+                name="idx_requests_success_send",
+                fields=["send_time"],
+                condition=Q(task_status="success"),
+            ),
+            models.Index(
+                name="idx_requests_success_model_send",
+                fields=["model_id", "send_time"],
+                condition=Q(task_status="success"),
+            ),
+            models.Index(
+                name="idx_requests_model_send_ip",
+                fields=["model_id", "send_time", "ip_id"],
+                condition=Q(ip_id__isnull=False),
+            ),
+        ]
 
 
 class Whitelist(models.Model):

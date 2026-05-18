@@ -82,6 +82,8 @@ CREATE INDEX servers_online_model_idx
     WHERE deleted_at IS NULL;
 ```
 
+Create the request-table indexes from `sql/requests_indexes.sql` on PostgreSQL. The processing partial indexes are required for the LLM request hot path because the `requests` table can be very large while active `processing` rows are small. Run these outside a transaction because they use `CREATE INDEX CONCURRENTLY`.
+
 The load balancer also records the selected backend and number of backend attempts per request:
 
 ```sql
