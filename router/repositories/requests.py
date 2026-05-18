@@ -22,6 +22,7 @@ class RequestRepository:
             input_token_cnt=0,
             output_token_cnt=0,
             attempt_count=0,
+            prefix_cache=0.0,
         )
 
     @staticmethod
@@ -49,6 +50,7 @@ class RequestRepository:
             is_stream=is_stream,
             user_agent=(user_agent or "")[:500],
             attempt_count=0,
+            prefix_cache=0.0,
         )
 
     @staticmethod
@@ -92,11 +94,16 @@ class RequestRepository:
         record.save(update_fields=update_fields)
 
     @staticmethod
-    def record_attempt(record: RequestRecord, target_pod_ip: str | None, attempt_count: int) -> None:
+    def record_attempt(record: RequestRecord, target_pod_ip: str | None, attempt_count: int, prefix_cache: float | None = None) -> None:
         record.attempt_count = attempt_count
+        update_fields = ["attempt_count"]
         if target_pod_ip:
             record.target_pod_ip = target_pod_ip[:500]
-        record.save(update_fields=["attempt_count", "target_pod_ip"] if target_pod_ip else ["attempt_count"])
+            update_fields.append("target_pod_ip")
+        if prefix_cache is not None:
+            record.prefix_cache = prefix_cache
+            update_fields.append("prefix_cache")
+        record.save(update_fields=update_fields)
 
     @staticmethod
     def cleanup_stale(model_id: int | None = None, threshold_minutes: int = 20) -> int:

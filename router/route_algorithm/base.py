@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
 
-@dataclass(frozen=True)
+@dataclass
 class ServerSelectionContext:
     request_id: int
     ip_id: int | None
@@ -14,6 +14,7 @@ class ServerSelectionContext:
     method: str
     is_stream: bool
     body: bytes
+    prefix_cache: float = 0.0
 
 
 class ServerChooser(Protocol):

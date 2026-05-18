@@ -68,6 +68,7 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
                         if server is not None:
                             cached_matches.append(server)
 
+        context.prefix_cache = best_match_ratio
         if cached_matches:
             unique_cached = {server.id: server for server in cached_matches}.values()
             return self._choose_least_loaded(list(unique_cached))
