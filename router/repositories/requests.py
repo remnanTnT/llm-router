@@ -71,13 +71,25 @@ class RequestRepository:
         record.fail_reason = None if record.task_status == "success" else reason[:100]
         record.input_token_cnt = input_tokens or 0
         record.output_token_cnt = output_tokens or 0
+        update_fields = [
+            "end_time",
+            "latency",
+            "status",
+            "task_status",
+            "fail_reason",
+            "input_token_cnt",
+            "output_token_cnt",
+        ]
         if target_pod_ip:
             record.target_pod_ip = target_pod_ip[:500]
+            update_fields.append("target_pod_ip")
         if model_id is not None:
             record.model_id = model_id
+            update_fields.append("model_id")
         if attempt_count is not None:
             record.attempt_count = attempt_count
-        record.save()
+            update_fields.append("attempt_count")
+        record.save(update_fields=update_fields)
 
     @staticmethod
     def record_attempt(record: RequestRecord, target_pod_ip: str | None, attempt_count: int) -> None:
@@ -157,7 +169,13 @@ class RequestRepository:
     def count_distinct_ips_by_bucket(start: datetime, end: datetime, model_id: int, bucket_expr) -> dict:
         return {
             row["bucket"]: row["count"]
-            for row in RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, model_id=model_id, ip_id__isnull=False)
+            for row in RequestRecord.objects.filter(
+                send_time__gte=start,
+                send_time__lte=end,
+                task_status="success",
+                model_id=model_id,
+                ip_id__isnull=False,
+            )
             .annotate(bucket=bucket_expr)
             .values("bucket")
             .annotate(count=models.Count("ip_id", distinct=True))
