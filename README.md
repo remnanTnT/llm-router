@@ -59,6 +59,8 @@ The router expects these existing tables:
 
 Django models are unmanaged (`managed = False`) and no schema-changing migrations should be generated or applied.
 
+All datetime columns should use `TIMESTAMPTZ`. The router runs with `TIME_ZONE = Asia/Shanghai` and sets the database connection time zone to `Asia/Shanghai`, so request lifecycle times such as `send_time` and `end_time` are saved and read in Beijing time.
+
 Example `servers` table:
 
 ```sql

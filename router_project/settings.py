@@ -44,6 +44,7 @@ DATABASES = {
         "CONN_MAX_AGE": 60,
         "CONN_HEALTH_CHECKS": True,
         "OPTIONS": {"sslmode": APP_CONFIG["database"].get("sslmode", "disable")},
+        "TIME_ZONE": TIME_ZONE,
     }
 }
 
@@ -51,6 +52,7 @@ if os.environ.get("USE_SQLITE_FOR_TESTS") == "1":
     DATABASES["default"] = {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": str(Path(BASE_DIR) / "test.sqlite3"),
+        "TIME_ZONE": TIME_ZONE,
     }
 
 STATIC_URL = "static/"

@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 from urllib3 import PoolManager
 from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
-from urllib3.poolmanager import SSL_KEYWORDS, _DEFAULT_BLOCKSIZE
+from urllib3.poolmanager import SSL_KEYWORDS
 
 
 class UpstreamCancellationController:
@@ -116,7 +116,7 @@ class CancellablePoolManager(PoolManager):
             request_context = request_context.copy()
 
         if request_context.get("blocksize") is None:
-            request_context["blocksize"] = _DEFAULT_BLOCKSIZE
+            request_context["blocksize"] = 16384
 
         for key in ("scheme", "host", "port"):
             request_context.pop(key, None)
