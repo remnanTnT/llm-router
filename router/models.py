@@ -45,15 +45,6 @@ class UserIP(TimestampedSoftDeleteModel):
         db_table = "user_ips"
 
 
-class UserVisitCount(TimestampedSoftDeleteModel):
-    employee_no = models.CharField(max_length=50)
-    visit_count = models.IntegerField(default=0)
-
-    class Meta:
-        managed = False
-        db_table = "user_visit_counts"
-
-
 class Model(models.Model):
     model_name = models.CharField(max_length=100, unique=True)
     concurrent_limit = models.IntegerField(blank=True, null=True, default=3)
@@ -80,7 +71,7 @@ class Server(TimestampedSoftDeleteModel):
 
 
 class RequestRecord(TimestampedSoftDeleteModel):
-    user_ip_id = models.IntegerField(default=1)
+    user_ip_id = models.IntegerField()
     ip_id = models.IntegerField(blank=True, null=True)
     send_time = models.DateTimeField()
     end_time = models.DateTimeField(blank=True, null=True)
@@ -88,7 +79,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
     model_id = models.IntegerField()
     input_token_cnt = models.IntegerField(default=0)
     output_token_cnt = models.IntegerField(default=0)
-    task_status = models.CharField(max_length=20, default="processing")
+    task_status = models.CharField(max_length=20)
     status = models.CharField(max_length=50, blank=True, null=True)
     fail_reason = models.CharField(max_length=100, blank=True, null=True)
     is_stream = models.BooleanField(blank=True, null=True)

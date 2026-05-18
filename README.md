@@ -52,7 +52,6 @@ The router expects these existing tables:
 - `ips`
 - `departments`
 - `user_ips`
-- `user_visit_counts`
 - `models`
 - `requests`
 - `whitelist`
