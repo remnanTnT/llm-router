@@ -118,6 +118,8 @@ def whitelist_update(request):
 @csrf_exempt
 @require_http_methods(["POST"])
 def refresh_user_info(request):
+    if not APP_CONFIG.get("cmdb", {}).get("enabled", False):
+        return JsonResponse({"code": 403, "error": "CMDB is not enabled"}, status=403)
     threading.Thread(target=CMDBService().fetch_all_users, daemon=True).start()
     return JsonResponse({"code": 200, "message": "用户信息刷新任务已启动"})
 
