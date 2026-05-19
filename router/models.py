@@ -65,6 +65,7 @@ class Server(TimestampedSoftDeleteModel):
     last_checked_at = models.DateTimeField(blank=True, null=True)
     last_failure_at = models.DateTimeField(blank=True, null=True)
     cache_time = models.IntegerField(default=3600)
+    csb_token = models.CharField(max_length=500, blank=True, null=True)
 
     class Meta:
         managed = False
