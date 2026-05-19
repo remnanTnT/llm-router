@@ -130,7 +130,7 @@ class ProxyService:
                 try:
                     req_headers = {**headers}
                     if server.csb_token:
-                        req_headers["csb_token"] = server.csb_token
+                        req_headers["csb-token"] = server.csb_token
                     upstream = upstream_client.request(
                         django_request.method,
                         upstream_url,
@@ -235,7 +235,7 @@ class ProxyService:
                 try:
                     req_headers = {**headers}
                     if server.csb_token:
-                        req_headers["csb_token"] = server.csb_token
+                        req_headers["csb-token"] = server.csb_token
                     with requests.request(
                         django_request.method,
                         upstream_url,
