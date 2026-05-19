@@ -213,8 +213,8 @@ class Command(BaseCommand):
             "double precision": "double precision",
             "real": "real",
             "date": "date",
-            "timestamp with time zone": "timestamptz",
-            "timestamp without time zone": "timestamp",
+            "timestamp with time zone": "timestamp with time zone",
+            "timestamp without time zone": "timestamp without time zone",
         }
         base = type_map.get(data_type, data_type)
         if base in ("varchar", "char") and char_max_len is not None:
