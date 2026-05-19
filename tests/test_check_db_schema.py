@@ -87,3 +87,41 @@ def test_check_db_schema_fix_drops_extra_column(capsys):
     assert "Extra columns in servers: metrics_port" in output.err
     assert 'ALTER TABLE "servers" DROP COLUMN "metrics_port";' in output.out
     assert not has_column("servers", "metrics_port")
+
+
+def test_check_db_schema_reports_missing_unique_constraint(capsys):
+    with connection.schema_editor() as schema_editor:
+        schema_editor.execute('ALTER TABLE "servers" DROP CONSTRAINT IF EXISTS "servers_base_url_key";')
+
+    with pytest.raises(SystemExit):
+        call_command("check_db_schema")
+
+    output = capsys.readouterr()
+    assert "Missing unique constraint in servers.base_url" in output.err
+
+    # Restore
+    with connection.schema_editor() as schema_editor:
+        schema_editor.execute('ALTER TABLE "servers" ADD CONSTRAINT "servers_base_url_key" UNIQUE ("base_url");')
+
+
+def test_check_db_schema_fix_adds_missing_unique_constraint(capsys):
+    with connection.schema_editor() as schema_editor:
+        schema_editor.execute('ALTER TABLE "servers" DROP CONSTRAINT IF EXISTS "servers_base_url_key";')
+
+    call_command("check_db_schema", "--fix")
+
+    output = capsys.readouterr()
+    assert 'ADD CONSTRAINT "servers_base_url_key" UNIQUE ("base_url")' in output.out
+
+    # Verify constraint was added
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT 1 FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+            JOIN pg_class c ON c.oid = i.indrelid
+            WHERE c.relname = 'servers' AND a.attname = 'base_url'
+              AND i.indisunique = true AND i.indisprimary = false
+            """
+        )
+        assert cursor.fetchone() is not None

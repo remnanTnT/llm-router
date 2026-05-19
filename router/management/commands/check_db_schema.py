@@ -68,6 +68,17 @@ class Command(BaseCommand):
                         with connection.schema_editor() as schema_editor:
                             schema_editor.execute(sql)
 
+            for table, mismatches in drift["unique_mismatches"].items():
+                for column, status in mismatches.items():
+                    if status == "missing":
+                        sql = self._add_unique_sql(table, column)
+                    else:
+                        sql = self._drop_unique_sql(table, column)
+                    self.stdout.write(sql)
+                    if not dry_run:
+                        with connection.schema_editor() as schema_editor:
+                            schema_editor.execute(sql)
+
             if not dry_run:
                 drift = self._inspect_schema(models)
                 self._write_drift(drift)
@@ -78,7 +89,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Database schema matches Django model definitions"))
 
     def _inspect_schema(self, models):
-        drift = {"missing_tables": [], "missing_columns": {}, "extra_columns": {}, "extra_defaults": {}, "nullable_mismatches": {}, "type_mismatches": {}}
+        drift = {"missing_tables": [], "missing_columns": {}, "extra_columns": {}, "extra_defaults": {}, "nullable_mismatches": {}, "type_mismatches": {}, "unique_mismatches": {}}
         expected_tables = {model._meta.db_table: model for model in models}
 
         with connection.cursor() as cursor:
@@ -111,6 +122,10 @@ class Command(BaseCommand):
                 extra_defaults = self._extra_defaults(cursor, table, model, actual_columns)
                 if extra_defaults:
                     drift["extra_defaults"][table] = extra_defaults
+
+                unique_mismatches = self._unique_mismatches(cursor, table, model, actual_columns)
+                if unique_mismatches:
+                    drift["unique_mismatches"][table] = unique_mismatches
 
         drift["missing_tables"].sort()
         return drift
@@ -210,6 +225,47 @@ class Command(BaseCommand):
             return f"numeric({num_prec})"
         return base
 
+    def _unique_mismatches(self, cursor, table, model, actual_columns):
+        if connection.vendor != "postgresql":
+            return {}
+        # Get columns that have single-column unique constraints in the DB
+        cursor.execute(
+            """
+            SELECT a.attname
+            FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+            JOIN pg_class c ON c.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relname = %s
+              AND n.nspname = current_schema()
+              AND i.indisunique = true
+              AND i.indisprimary = false
+              AND array_length(i.indkey, 1) = 1
+            """,
+            [table],
+        )
+        db_unique_columns = {row[0] for row in cursor.fetchall()}
+
+        mismatches = {}
+        for field in model._meta.local_concrete_fields:
+            if field.column not in actual_columns or field.primary_key:
+                continue
+            if field.unique and field.column not in db_unique_columns:
+                mismatches[field.column] = "missing"
+            elif not field.unique and field.column in db_unique_columns:
+                mismatches[field.column] = "extra"
+        return mismatches
+
+    def _add_unique_sql(self, table, column):
+        quote_name = connection.ops.quote_name
+        constraint_name = f"{table}_{column}_key"
+        return f"ALTER TABLE {quote_name(table)} ADD CONSTRAINT {quote_name(constraint_name)} UNIQUE ({quote_name(column)});"
+
+    def _drop_unique_sql(self, table, column):
+        quote_name = connection.ops.quote_name
+        constraint_name = f"{table}_{column}_key"
+        return f"ALTER TABLE {quote_name(table)} DROP CONSTRAINT IF EXISTS {quote_name(constraint_name)};"
+
     def _create_table_sql(self, model):
         quote_name = connection.ops.quote_name
         table = model._meta.db_table
@@ -295,3 +351,10 @@ class Command(BaseCommand):
         for table, mismatches in drift["type_mismatches"].items():
             for column, info in mismatches.items():
                 self.stderr.write(f"Type mismatch in {table}.{column}: db is {info['actual']}, model expects {info['expected']}")
+
+        for table, mismatches in drift["unique_mismatches"].items():
+            for column, status in mismatches.items():
+                if status == "missing":
+                    self.stderr.write(f"Missing unique constraint in {table}.{column}")
+                else:
+                    self.stderr.write(f"Extra unique constraint in {table}.{column}")
