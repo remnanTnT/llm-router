@@ -128,10 +128,13 @@ class ProxyService:
                     getattr(context, "last_match", None),
                 )
                 try:
+                    req_headers = {**headers}
+                    if server.csb_token:
+                        req_headers["csb_token"] = server.csb_token
                     upstream = upstream_client.request(
                         django_request.method,
                         upstream_url,
-                        headers=headers,
+                        headers=req_headers,
                         data=body if django_request.method.upper() not in {"GET", "HEAD"} else None,
                         timeout=self.normal_timeout,
                     )
@@ -230,10 +233,13 @@ class ProxyService:
                     getattr(context, "last_match", None),
                 )
                 try:
+                    req_headers = {**headers}
+                    if server.csb_token:
+                        req_headers["csb_token"] = server.csb_token
                     with requests.request(
                         django_request.method,
                         upstream_url,
-                        headers=headers,
+                        headers=req_headers,
                         data=body,
                         stream=True,
                         timeout=self.stream_timeout,

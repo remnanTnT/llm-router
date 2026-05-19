@@ -74,6 +74,7 @@ CREATE TABLE servers (
     last_checked_at TIMESTAMPTZ NULL,
     last_failure_at TIMESTAMPTZ NULL,
     cache_time INTEGER NOT NULL DEFAULT 3600,
+    csb_token VARCHAR(500) NULL,
     created_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NULL,
     deleted_at TIMESTAMPTZ NULL
