@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import random
 import threading
 from datetime import timedelta
 from typing import Any, Callable, Sequence
@@ -10,6 +12,9 @@ from django.utils import timezone
 from router.config import APP_CONFIG
 from router.route_algorithm.base import ServerSelectionContext
 from router.route_algorithm.least_connection import LeastConnectionServerChooser
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
@@ -53,6 +58,7 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         cached_matches = []
         best_match_ratio = 0.0
         best_match_request_id = None
+        server_match_ratios: dict[int, float] = {}
 
         with self._cache_lock:
             entries = self._prefix_cache.get(model_key, [])
@@ -67,11 +73,25 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
                 if match_ratio > best_match_ratio:
                     best_match_ratio = match_ratio
                     best_match_request_id = entry.get("request_id")
+                for server_id in entry["server_cached_at"]:
+                    if match_ratio > server_match_ratios.get(server_id, 0.0):
+                        server_match_ratios[server_id] = match_ratio
                 if match_ratio > self.primary_match_threshold:
                     for server_id in entry["server_cached_at"]:
                         server = available_by_id.get(server_id)
                         if server is not None:
                             cached_matches.append(server)
+
+        logger.info(
+            "[PrefixCachePreble] match_ratio per server (model=%s, best=%.4f):",
+            model_key, best_match_ratio,
+        )
+        for server in available:
+            ratio = server_match_ratios.get(server.id, 0.0)
+            logger.info(
+                "  server_id=%-6d base_url=%-40s match_ratio=%.4f",
+                server.id, server.base_url, ratio,
+            )
 
         context.prefix_cache = best_match_ratio
         context.last_match = best_match_request_id
@@ -83,6 +103,22 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             return self._choose_least_loaded(available)
 
         return self._choose_least_loaded(available)
+
+    def _choose_least_loaded(self, available: Sequence[Any]) -> Any | None:
+        if not available:
+            return None
+        targets = [server.base_url for server in available]
+        processing_counts = self._count_processing(targets)
+        logger.info("[PrefixCachePreble] connection counts per server:")
+        for server in available:
+            count = processing_counts.get(server.base_url, 0)
+            logger.info(
+                "  server_id=%-6d base_url=%-40s connections=%d",
+                server.id, server.base_url, count,
+            )
+        min_count = min(processing_counts.get(server.base_url, 0) for server in available)
+        least_loaded = [server for server in available if processing_counts.get(server.base_url, 0) == min_count]
+        return random.choice(least_loaded)
 
     def on_response(self, server: Any, context: ServerSelectionContext, status_code: int) -> None:
         if not 200 <= status_code < 300:
