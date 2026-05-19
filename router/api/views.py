@@ -245,5 +245,53 @@ def _average_latency_stats(start, end, model_id: int | None = None):
     return fill_series(labels, values, "avg_duration_ms", None)
 
 
+@require_http_methods(["POST"])
+def add_server(request):
+    import json
+    import requests as http_requests
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    base_url = data.get("base_url", "").strip()
+    if not base_url:
+        return _bad_request("base_url is required")
+
+    if not base_url.rstrip("/").endswith("/v1"):
+        return _bad_request("base_url must end with /v1")
+
+    model_name = data.get("model_name", "").strip()
+    if not model_name:
+        return _bad_request("model_name is required")
+
+    from router.models import Model, Server
+
+    if Server.objects.filter(base_url=base_url).exists():
+        return _bad_request("base_url already exists")
+
+    # Verify server is reachable and serves the expected model
+    verify_url = base_url.rstrip("/") + "/models"
+    try:
+        resp = http_requests.get(verify_url, timeout=10)
+        resp.raise_for_status()
+        models_data = resp.json()
+    except Exception as e:
+        return _bad_request(f"failed to reach server at {verify_url}: {e}")
+
+    model_ids = [m.get("id", "") for m in models_data.get("data", [])]
+    if model_name not in model_ids:
+        return _bad_request(f"model '{model_name}' not found in server response, available: {model_ids}")
+
+    model_obj, _ = Model.objects.get_or_create(model_name=model_name)
+    server = Server.objects.create(
+        model_id=model_obj.id,
+        base_url=base_url,
+    )
+
+    return JsonResponse({"code": 200, "data": {"id": server.id, "base_url": server.base_url, "model_name": model_name}})
+
+
 def _bad_request(message: str):
     return JsonResponse({"code": 400, "error": message}, status=400)

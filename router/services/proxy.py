@@ -5,7 +5,6 @@ import json
 import random
 import threading
 import time
-from urllib.parse import urljoin
 
 from django.http import HttpResponse, StreamingHttpResponse
 import requests
@@ -78,9 +77,10 @@ class ProxyService:
         return self._handle_normal(django_request, path, headers, parsed.body, record, parsed.model_name, user_agent, candidates, context)
 
     def _build_url(self, base_url: str, path: str, query_string: str) -> str:
-        url = urljoin(base_url.rstrip("/") + "/", f"v1/{path}")
+        url = base_url.rstrip("/") + "/" + path
         if query_string:
-            url = f"{url}?{query_string}"
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}{query_string}"
         return url
 
     def _candidates_for_request(self, path: str, model_id: int | None):

@@ -18,4 +18,5 @@ urlpatterns = [
     path("download/ai_assistant", views.download_ai_assistant),
     path("whitelist/update", router_views.whitelist_update),
     path("refresh_user_info", router_views.refresh_user_info),
+    path("add_server", views.add_server),
 ]
