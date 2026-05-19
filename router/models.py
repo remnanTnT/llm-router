@@ -100,7 +100,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
                 condition=Q(task_status="processing"),
             ),
             models.Index(
-                name="idx_requests_processing_model_send",
+                name="idx_req_proc_model_send",
                 fields=["model_id", "send_time"],
                 condition=Q(task_status="processing"),
             ),
@@ -115,7 +115,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
                 condition=Q(task_status="success"),
             ),
             models.Index(
-                name="idx_requests_success_model_send",
+                name="idx_req_succ_model_send",
                 fields=["model_id", "send_time"],
                 condition=Q(task_status="success"),
             ),
