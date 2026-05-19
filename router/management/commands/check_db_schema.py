@@ -19,6 +19,23 @@ class Command(BaseCommand):
         self._write_drift(drift)
 
         if fix:
+            for table in drift["missing_tables"]:
+                model = {m._meta.db_table: m for m in models}[table]
+                sql = self._create_table_sql(model)
+                self.stdout.write(sql)
+                if not dry_run:
+                    with connection.schema_editor() as schema_editor:
+                        schema_editor.execute(sql)
+
+            for table, columns in drift["missing_columns"].items():
+                model = {m._meta.db_table: m for m in models}[table]
+                for column in columns:
+                    sql = self._add_column_sql(model, column)
+                    self.stdout.write(sql)
+                    if not dry_run:
+                        with connection.schema_editor() as schema_editor:
+                            schema_editor.execute(sql)
+
             for table, columns in drift["extra_columns"].items():
                 for column in columns:
                     sql = self._drop_column_sql(table, column)
@@ -35,6 +52,22 @@ class Command(BaseCommand):
                         with connection.schema_editor() as schema_editor:
                             schema_editor.execute(sql)
 
+            for table, mismatches in drift["nullable_mismatches"].items():
+                for column, expected_null in mismatches.items():
+                    sql = self._alter_nullable_sql(table, column, expected_null)
+                    self.stdout.write(sql)
+                    if not dry_run:
+                        with connection.schema_editor() as schema_editor:
+                            schema_editor.execute(sql)
+
+            for table, mismatches in drift["type_mismatches"].items():
+                for column, info in mismatches.items():
+                    sql = self._alter_type_sql(table, column, info["expected"])
+                    self.stdout.write(sql)
+                    if not dry_run:
+                        with connection.schema_editor() as schema_editor:
+                            schema_editor.execute(sql)
+
             if not dry_run:
                 drift = self._inspect_schema(models)
                 self._write_drift(drift)
@@ -45,7 +78,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Database schema matches Django model definitions"))
 
     def _inspect_schema(self, models):
-        drift = {"missing_tables": [], "missing_columns": {}, "extra_columns": {}, "extra_defaults": {}}
+        drift = {"missing_tables": [], "missing_columns": {}, "extra_columns": {}, "extra_defaults": {}, "nullable_mismatches": {}, "type_mismatches": {}}
         expected_tables = {model._meta.db_table: model for model in models}
 
         with connection.cursor() as cursor:
@@ -58,6 +91,7 @@ class Command(BaseCommand):
                 expected_columns = self._expected_columns(model)
                 description = connection.introspection.get_table_description(cursor, table)
                 actual_columns = {column.name for column in description}
+                actual_nullable = {column.name: column.null_ok for column in description}
                 missing_columns = sorted(expected_columns - actual_columns)
                 extra_columns = sorted(actual_columns - expected_columns)
 
@@ -65,6 +99,14 @@ class Command(BaseCommand):
                     drift["missing_columns"][table] = missing_columns
                 if extra_columns:
                     drift["extra_columns"][table] = extra_columns
+
+                nullable_mismatches = self._nullable_mismatches(model, actual_columns, actual_nullable)
+                if nullable_mismatches:
+                    drift["nullable_mismatches"][table] = nullable_mismatches
+
+                type_mismatches = self._type_mismatches(cursor, table, model, actual_columns)
+                if type_mismatches:
+                    drift["type_mismatches"][table] = type_mismatches
 
                 extra_defaults = self._extra_defaults(cursor, table, model, actual_columns)
                 if extra_defaults:
@@ -83,7 +125,7 @@ class Command(BaseCommand):
         fields_without_defaults = [
             field.column
             for field in model._meta.local_concrete_fields
-            if field.column in actual_columns and not field.primary_key and field.default is field.NOT_PROVIDED
+            if field.column in actual_columns and not field.primary_key and not field.has_default()
         ]
         if not fields_without_defaults:
             return []
@@ -102,6 +144,118 @@ class Command(BaseCommand):
         )
         return sorted(row[0] for row in cursor.fetchall())
 
+    def _nullable_mismatches(self, model, actual_columns, actual_nullable):
+        mismatches = {}
+        for field in model._meta.local_concrete_fields:
+            if field.column not in actual_columns or field.primary_key:
+                continue
+            expected_null = field.null
+            db_null = actual_nullable.get(field.column)
+            if db_null is not None and expected_null != db_null:
+                mismatches[field.column] = expected_null
+        return mismatches
+
+    def _type_mismatches(self, cursor, table, model, actual_columns):
+        if connection.vendor != "postgresql":
+            return {}
+        field_map = {f.column: f for f in model._meta.local_concrete_fields}
+        columns_to_check = [c for c in actual_columns if c in field_map and not field_map[c].primary_key]
+        if not columns_to_check:
+            return {}
+        placeholders = ", ".join(["%s"] * len(columns_to_check))
+        cursor.execute(
+            f"""
+            SELECT column_name, data_type, character_maximum_length, numeric_precision, numeric_scale
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = %s
+              AND column_name IN ({placeholders})
+            """,
+            [table, *columns_to_check],
+        )
+        mismatches = {}
+        for row in cursor.fetchall():
+            col_name, data_type, char_max_len, num_prec, num_scale = row
+            field = field_map[col_name]
+            expected_type = field.db_type(connection)
+            if not expected_type:
+                continue
+            actual_type = self._reconstruct_type(data_type, char_max_len, num_prec, num_scale)
+            if actual_type != expected_type:
+                mismatches[col_name] = {"actual": actual_type, "expected": expected_type}
+        return mismatches
+
+    @staticmethod
+    def _reconstruct_type(data_type, char_max_len, num_prec, num_scale):
+        type_map = {
+            "character varying": "varchar",
+            "character": "char",
+            "integer": "integer",
+            "bigint": "bigint",
+            "smallint": "smallint",
+            "boolean": "boolean",
+            "text": "text",
+            "double precision": "double precision",
+            "real": "real",
+            "date": "date",
+            "timestamp with time zone": "timestamptz",
+            "timestamp without time zone": "timestamp",
+        }
+        base = type_map.get(data_type, data_type)
+        if base in ("varchar", "char") and char_max_len is not None:
+            return f"{base}({char_max_len})"
+        if base == "numeric" and num_prec is not None:
+            if num_scale:
+                return f"numeric({num_prec}, {num_scale})"
+            return f"numeric({num_prec})"
+        return base
+
+    def _create_table_sql(self, model):
+        quote_name = connection.ops.quote_name
+        table = model._meta.db_table
+        col_defs = []
+        for field in model._meta.local_concrete_fields:
+            col_type = field.db_type(connection)
+            if not col_type:
+                continue
+            parts = [quote_name(field.column), col_type]
+            if field.primary_key:
+                parts.append("PRIMARY KEY")
+            else:
+                if not field.null:
+                    parts.append("NOT NULL")
+                if field.unique:
+                    parts.append("UNIQUE")
+                if field.has_default():
+                    default = field.get_default()
+                    if isinstance(default, str):
+                        parts.append(f"DEFAULT '{default}'")
+                    elif isinstance(default, bool):
+                        parts.append(f"DEFAULT {'true' if default else 'false'}")
+                    elif default is None:
+                        parts.append("DEFAULT NULL")
+                    else:
+                        parts.append(f"DEFAULT {default}")
+            col_defs.append(" ".join(parts))
+        return f"CREATE TABLE {quote_name(table)} ({', '.join(col_defs)});"
+
+    def _add_column_sql(self, model, column_name):
+        quote_name = connection.ops.quote_name
+        field = next(f for f in model._meta.local_concrete_fields if f.column == column_name)
+        col_type = field.db_type(connection)
+        parts = [f"ALTER TABLE {quote_name(model._meta.db_table)} ADD COLUMN {quote_name(column_name)} {col_type}"]
+        if not field.null:
+            parts.append("NOT NULL")
+            if field.has_default():
+                default = field.get_default()
+                if isinstance(default, str):
+                    parts.append(f"DEFAULT '{default}'")
+                elif isinstance(default, bool):
+                    parts.append(f"DEFAULT {'true' if default else 'false'}")
+                else:
+                    parts.append(f"DEFAULT {default}")
+        return " ".join(parts) + ";"
+
     def _drop_column_sql(self, table, column):
         quote_name = connection.ops.quote_name
         return f"ALTER TABLE {quote_name(table)} DROP COLUMN {quote_name(column)};"
@@ -109,6 +263,15 @@ class Command(BaseCommand):
     def _drop_default_sql(self, table, column):
         quote_name = connection.ops.quote_name
         return f"ALTER TABLE {quote_name(table)} ALTER COLUMN {quote_name(column)} DROP DEFAULT;"
+
+    def _alter_nullable_sql(self, table, column, expected_null):
+        quote_name = connection.ops.quote_name
+        action = "DROP NOT NULL" if expected_null else "SET NOT NULL"
+        return f"ALTER TABLE {quote_name(table)} ALTER COLUMN {quote_name(column)} {action};"
+
+    def _alter_type_sql(self, table, column, expected_type):
+        quote_name = connection.ops.quote_name
+        return f"ALTER TABLE {quote_name(table)} ALTER COLUMN {quote_name(column)} TYPE {expected_type};"
 
     def _write_drift(self, drift):
         if drift["missing_tables"]:
@@ -122,3 +285,13 @@ class Command(BaseCommand):
 
         for table, columns in drift["extra_defaults"].items():
             self.stderr.write(f"Extra defaults in {table}: {', '.join(columns)}")
+
+        for table, mismatches in drift["nullable_mismatches"].items():
+            for column, expected_null in mismatches.items():
+                actual = "NULL" if not expected_null else "NOT NULL"
+                expected = "NULL" if expected_null else "NOT NULL"
+                self.stderr.write(f"Nullable mismatch in {table}.{column}: db is {actual}, model expects {expected}")
+
+        for table, mismatches in drift["type_mismatches"].items():
+            for column, info in mismatches.items():
+                self.stderr.write(f"Type mismatch in {table}.{column}: db is {info['actual']}, model expects {info['expected']}")
