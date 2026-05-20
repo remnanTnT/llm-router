@@ -14,6 +14,7 @@ from router.repositories.models import ModelRepository
 from router.repositories.requests import RequestRepository
 from router.repositories.servers import ServerRepository
 from router.services.cancellable_upstream import CancellableUpstreamRequest
+from router.services.circuit_breaker import CircuitBreakerService
 from router.services.disconnect import DisconnectWatcher
 from router.services.opencode import OpencodeVersionService
 from router.services.request_logger import append_request_log
@@ -45,6 +46,7 @@ class ProxyService:
         self.stream_total_timeout = float(proxy_config.get("stream_total_timeout_seconds", 900))
         self.client_disconnect_check_interval = float(proxy_config.get("client_disconnect_check_interval_seconds", 0.5))
         self.opencode_400_delay = float(proxy_config.get("opencode_400_delay_seconds", 180))
+        self.circuit_breaker = CircuitBreakerService()
 
     def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None):
         record = RequestRepository.create_processing(ip_id, model.id if model else 0, parsed.stream, user_agent)
@@ -350,6 +352,8 @@ class ProxyService:
         return LegacyServer()
 
     def _notify_chooser_response(self, server, context, status_code: int) -> None:
+        if 200 <= status_code < 300 and server.id != 0:
+            self.circuit_breaker.record_success(server)
         hook = getattr(self.chooser, "on_response", None)
         if not hook:
             return
@@ -363,10 +367,9 @@ class ProxyService:
                 "reason": str(exc)[:500],
             }, ensure_ascii=False))
 
-    @staticmethod
-    def _mark_unhealthy(server) -> None:
+    def _mark_unhealthy(self, server) -> None:
         if server.id != 0:
-            ServerRepository.mark_unhealthy(server)
+            self.circuit_breaker.record_failure(server)
 
     @staticmethod
     def _target_identifier(server) -> str | None:

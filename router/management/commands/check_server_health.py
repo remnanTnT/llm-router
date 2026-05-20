@@ -14,6 +14,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         recover_offline = options.get("recover_offline", False)
         server_id = options.get("server_id")
+
         servers = ServerRepository.list_all_active()
         if server_id is not None:
             servers = [server for server in servers if server.id == server_id]
