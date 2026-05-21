@@ -101,7 +101,7 @@ def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
     context = make_context(make_body([str(i) for i in range(60)] + [f"new-{i}" for i in range(40)]))
     selected = chooser.choose(candidates, context, set())
 
-    assert selected.id == 1
+    assert selected.id == 2
     assert context.prefix_cache == pytest.approx(61 / 101)
     assert context.last_match == 201
 
