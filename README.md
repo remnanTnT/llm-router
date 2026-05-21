@@ -46,7 +46,7 @@ A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one 
 - **Opencode Client Compatibility**
   - Parses `opencode/<X.Y.Z>` from `User-Agent`
   - Hard-blocks clients ≤ `opencode.block_max_version` (default 1.2.26)
-  - Delays upstream 400 responses for clients ≤ `opencode.delay_400_max_version` (default 1.2.27) to slow buggy retry storms
+  - Delays failed opencode responses by `proxy.opencode_failure_delay_seconds` (default 180) to slow buggy retry storms
 
 - **Request Lifecycle Tracking**
   - `processing` row inserted at proxy start; admission denials inserted directly as `failed`
