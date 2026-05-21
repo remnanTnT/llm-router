@@ -99,8 +99,12 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             unique_cached = {server.id: server for server in cached_matches}.values()
             return self._choose_least_loaded(list(unique_cached))
 
-        if best_match_ratio > self.secondary_match_threshold:
-            return self._choose_least_loaded(available)
+        secondary_matches = [
+            server for server in available
+            if server_match_ratios.get(server.id, 0.0) > self.secondary_match_threshold
+        ]
+        if secondary_matches:
+            return self._choose_least_loaded(secondary_matches)
 
         return self._choose_least_loaded(available)
 
