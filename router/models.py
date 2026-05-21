@@ -70,6 +70,7 @@ class Server(TimestampedSoftDeleteModel):
     consecutive_failures = models.IntegerField(default=0)
     last_state_change_at = models.DateTimeField(blank=True, null=True)
     cooldown_seconds = models.IntegerField(default=30)
+    workload = models.IntegerField(default=0)
 
     class Meta:
         managed = False

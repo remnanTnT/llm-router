@@ -103,6 +103,16 @@ class ServerRepository:
         server.updated_at = now
 
     @staticmethod
+    def increment_workload(server: Server) -> None:
+        Server.objects.filter(id=server.id).update(workload=F("workload") + 1)
+        server.workload = (server.workload or 0) + 1
+
+    @staticmethod
+    def decrement_workload(server: Server) -> None:
+        Server.objects.filter(id=server.id, workload__gt=0).update(workload=F("workload") - 1)
+        server.workload = max((server.workload or 0) - 1, 0)
+
+    @staticmethod
     def transition_to_half_open(server: Server) -> None:
         now = timezone.now()
         Server.objects.filter(id=server.id).update(

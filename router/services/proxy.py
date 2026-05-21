@@ -129,6 +129,7 @@ class ProxyService:
                     getattr(context, "prefix_cache", None),
                     getattr(context, "last_match", None),
                 )
+                self._increment_workload(server)
                 try:
                     req_headers = {**headers}
                     if server.csb_token:
@@ -198,6 +199,8 @@ class ProxyService:
                     if retry:
                         continue
                     break
+                finally:
+                    self._decrement_workload(server)
 
             self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
             RequestRepository.finish(record, last_status, last_reason, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
@@ -234,6 +237,8 @@ class ProxyService:
                 getattr(context, "prefix_cache", None),
                 getattr(context, "last_match", None),
             )
+            self._increment_workload(server)
+            workload_handed_off = False
             try:
                 req_headers = {**headers}
                 if server.csb_token:
@@ -273,6 +278,7 @@ class ProxyService:
                         response[key] = value
                     return response
 
+                workload_handed_off = True
                 return self._stream_success(django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context)
             except requests.exceptions.ReadTimeout:
                 last_status = 504
@@ -289,6 +295,9 @@ class ProxyService:
                 if retry:
                     continue
                 break
+            finally:
+                if not workload_handed_off:
+                    self._decrement_workload(server)
 
         self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
         RequestRepository.finish(record, last_status, last_reason, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
@@ -329,6 +338,7 @@ class ProxyService:
                 RequestRepository.finish(record, 502, "Bad Gateway", target_pod_ip=target_pod_ip, attempt_count=attempts)
             finally:
                 upstream.close()
+                self._decrement_workload(server)
 
         response = StreamingHttpResponse(generate(), status=200, content_type="text/event-stream")
         response["Cache-Control"] = "no-cache"
@@ -414,6 +424,14 @@ class ProxyService:
     def _mark_unhealthy(self, server) -> None:
         if server.id != 0:
             self.circuit_breaker.record_failure(server)
+
+    def _increment_workload(self, server) -> None:
+        if server and getattr(server, "id", 0) != 0:
+            ServerRepository.increment_workload(server)
+
+    def _decrement_workload(self, server) -> None:
+        if server and getattr(server, "id", 0) != 0:
+            ServerRepository.decrement_workload(server)
 
     @staticmethod
     def _target_identifier(server) -> str | None:
