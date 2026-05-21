@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import MagicMock
 
 import pytest
 import requests
+from django.utils import timezone
 
-from router.models import Model, Server
+from router.models import Model, RequestRecord, Server
+from router.repositories.requests import RequestRepository
 from router.repositories.servers import ServerRepository
 from router.route_algorithm.base import ServerSelectionContext
 from router.services.proxy import ProxyService
@@ -186,3 +189,65 @@ def test_workload_kept_until_stream_generator_completes(monkeypatch):
 
     server.refresh_from_db()
     assert server.workload == 0
+
+
+def _make_stale_processing(target_pod_ip: str, model_id: int, minutes_ago: int = 30) -> RequestRecord:
+    record = RequestRepository.create_processing(ip_id=1, model_id=model_id, is_stream=False, user_agent="t")
+    stale_time = timezone.now() - timedelta(minutes=minutes_ago)
+    RequestRecord.objects.filter(id=record.id).update(send_time=stale_time, target_pod_ip=target_pod_ip)
+    record.refresh_from_db()
+    return record
+
+
+def test_cleanup_stale_releases_workload_for_stale_targets():
+    server_a = Server.objects.create(base_url="http://a.example", is_online=True, workload=3)
+    server_b = Server.objects.create(base_url="http://b.example", is_online=True, workload=1)
+
+    _make_stale_processing("http://a.example", model_id=1)
+    _make_stale_processing("http://a.example", model_id=1)
+    _make_stale_processing("http://b.example", model_id=1)
+
+    updated = RequestRepository.cleanup_stale(threshold_minutes=20)
+
+    assert updated == 3
+    server_a.refresh_from_db()
+    server_b.refresh_from_db()
+    assert server_a.workload == 1
+    assert server_b.workload == 0
+
+
+def test_cleanup_stale_clamps_workload_at_zero_when_counter_already_drained():
+    server = Server.objects.create(base_url="http://drained.example", is_online=True, workload=0)
+    _make_stale_processing("http://drained.example", model_id=1)
+    _make_stale_processing("http://drained.example", model_id=1)
+
+    RequestRepository.cleanup_stale(threshold_minutes=20)
+
+    server.refresh_from_db()
+    assert server.workload == 0
+
+
+def test_cleanup_stale_ignores_records_without_target():
+    server = Server.objects.create(base_url="http://t.example", is_online=True, workload=2)
+    record = RequestRepository.create_processing(ip_id=1, model_id=1, is_stream=False, user_agent="t")
+    RequestRecord.objects.filter(id=record.id).update(
+        send_time=timezone.now() - timedelta(minutes=30),
+        target_pod_ip=None,
+    )
+
+    updated = RequestRepository.cleanup_stale(threshold_minutes=20)
+
+    assert updated == 1
+    server.refresh_from_db()
+    assert server.workload == 2
+
+
+def test_cleanup_stale_only_releases_filtered_model():
+    server = Server.objects.create(base_url="http://m.example", is_online=True, workload=2)
+    _make_stale_processing("http://m.example", model_id=1)
+    _make_stale_processing("http://m.example", model_id=2)
+
+    RequestRepository.cleanup_stale(model_id=1, threshold_minutes=20)
+
+    server.refresh_from_db()
+    assert server.workload == 1
