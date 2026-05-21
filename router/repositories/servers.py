@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from django.db.models import F
+from django.db.models import F, Value
+from django.db.models.functions import Greatest
 from django.utils import timezone
 
 from router.models import Server
@@ -101,6 +102,25 @@ class ServerRepository:
         server.cooldown_seconds = base_cooldown_seconds
         server.last_checked_at = now
         server.updated_at = now
+
+    @staticmethod
+    def increment_workload(server: Server) -> None:
+        Server.objects.filter(id=server.id).update(workload=F("workload") + 1)
+        server.workload = (server.workload or 0) + 1
+
+    @staticmethod
+    def decrement_workload(server: Server) -> None:
+        Server.objects.filter(id=server.id, workload__gt=0).update(workload=F("workload") - 1)
+        server.workload = max((server.workload or 0) - 1, 0)
+
+    @staticmethod
+    def decrement_workload_by_targets(target_counts: dict[str, int]) -> None:
+        for base_url, count in target_counts.items():
+            if not base_url or count <= 0:
+                continue
+            Server.objects.filter(base_url=base_url).update(
+                workload=Greatest(F("workload") - count, Value(0))
+            )
 
     @staticmethod
     def transition_to_half_open(server: Server) -> None:
