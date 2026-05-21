@@ -88,7 +88,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
     output_token_cnt = models.IntegerField(default=0)
     task_status = models.CharField(max_length=20)
     status = models.CharField(max_length=50, blank=True, null=True)
-    fail_reason = models.CharField(max_length=100, blank=True, null=True)
+    fail_reason = models.CharField(max_length=200, blank=True, null=True)
     is_stream = models.BooleanField(blank=True, null=True)
     user_agent = models.CharField(max_length=500, blank=True, null=True)
     target_pod_ip = models.CharField(max_length=500, blank=True, null=True)

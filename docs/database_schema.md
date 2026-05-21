@@ -63,6 +63,6 @@ ALTER TABLE requests ADD COLUMN last_match BIGINT NULL;
 Use the management commands to validate schema state without altering tables:
 
 ```bash
-python manage.py init_db
-python manage.py check_db_schema --dry-run
+python manage.py test init_db
+python manage.py test check_db_schema --dry-run
 ```

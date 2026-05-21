@@ -21,25 +21,25 @@ pip install -r requirements.txt
 Validate that Django can load:
 
 ```bash
-python manage.py check
+python manage.py test check
 ```
 
 Validate database connectivity and required tables:
 
 ```bash
-python manage.py init_db
+python manage.py test init_db
 ```
 
 Check schema presence without changing anything:
 
 ```bash
-python manage.py check_db_schema --dry-run
+python manage.py test check_db_schema --dry-run
 ```
 
 ## Run Locally With Django Dev Server
 
 ```bash
-python manage.py runserver 0.0.0.0:8001
+python manage.py test runserver 0.0.0.0:8001
 ```
 
 Health check:

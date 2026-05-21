@@ -46,3 +46,48 @@ def test_record_attempt_clears_last_match_when_no_match():
     record.refresh_from_db()
 
     assert record.last_match is None
+
+
+def test_create_blocked_status_uses_rfc_phrase():
+    record = RequestRepository.create_blocked(
+        ip_id=1,
+        model_id=7,
+        is_stream=False,
+        user_agent="pytest",
+        status_code=429,
+        fail_reason="concurrent limit exceeded",
+    )
+
+    assert record.status == "429 Too Many Requests"
+    assert record.fail_reason == "concurrent limit exceeded"
+    assert record.task_status == "failed"
+
+
+def test_finish_status_ignores_upstream_reason_text():
+    record = RequestRepository.create_processing(ip_id=1, model_id=7, is_stream=False, user_agent="pytest")
+
+    RequestRepository.finish(record, 502, "upstream timed out after retries: connection refused by 10.0.0.1:8000")
+
+    record.refresh_from_db()
+    assert record.status == "502 Bad Gateway"
+    assert record.fail_reason == "upstream timed out after retries: connection refused by 10.0.0.1:8000"
+
+
+def test_finish_status_success_clears_fail_reason():
+    record = RequestRepository.create_processing(ip_id=1, model_id=7, is_stream=False, user_agent="pytest")
+
+    RequestRepository.finish(record, 200, "OK", input_tokens=10, output_tokens=20)
+
+    record.refresh_from_db()
+    assert record.status == "200 OK"
+    assert record.task_status == "success"
+    assert record.fail_reason is None
+
+
+def test_finish_status_handles_client_closed_request():
+    record = RequestRepository.create_processing(ip_id=1, model_id=7, is_stream=False, user_agent="pytest")
+
+    RequestRepository.finish(record, 499, "Client Closed Request", task_status="agent_disconnected")
+
+    record.refresh_from_db()
+    assert record.status == "499 Client Closed Request"
