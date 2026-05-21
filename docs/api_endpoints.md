@@ -28,7 +28,7 @@ VALUES
 
 The default chooser is prefix-cache-preble: before each backend attempt, the router records the server `base_url` in `target_pod_ip`, records `attempt_count`, records the best prefix-cache `match_ratio` in `prefix_cache`, and records the historical request id that produced that best match in `last_match` (`NULL` when there is no match). If `match_ratio > prefix_cache.primary_match_threshold` (`0.9` by default), it chooses the least-loaded cached server; otherwise it chooses the least-loaded online server. The secondary threshold is configured with `prefix_cache.secondary_match_threshold` (`0.5` by default). Both can be overridden with `PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD` and `PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD`. Prefix cache metadata is marked only after a successful response completes.
 
-Use `python manage.py check_server_health --recover-offline` from cron or a scheduler to actively probe server health. Passive request failures also mark servers offline and the router retries another online candidate when it is still safe to do so.
+Use `python manage.py prod check_server_health --recover-offline` from cron or a scheduler to actively probe server health. Passive request failures also mark servers offline and the router retries another online candidate when it is still safe to do so.
 
 Example:
 

@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from http import HTTPStatus
 
 from django.db import models
 from django.utils import timezone
 
 from router.models import RequestRecord
+
+
+_EXTRA_STATUS_PHRASES = {
+    499: "Client Closed Request",
+}
+
+
+def _status_text(code: int) -> str:
+    try:
+        phrase = HTTPStatus(code).phrase
+    except ValueError:
+        phrase = _EXTRA_STATUS_PHRASES.get(code, "")
+    return f"{code} {phrase}".rstrip()
 
 
 class RequestRepository:
@@ -32,7 +46,7 @@ class RequestRepository:
         model_id: int,
         is_stream: bool | None,
         user_agent: str | None,
-        status: str,
+        status_code: int,
         fail_reason: str,
     ) -> RequestRecord:
         now = timezone.now()
@@ -46,8 +60,8 @@ class RequestRepository:
             input_token_cnt=0,
             output_token_cnt=0,
             task_status="failed",
-            status=status[:50],
-            fail_reason=fail_reason[:100],
+            status=_status_text(status_code),
+            fail_reason=fail_reason[:200],
             is_stream=is_stream,
             user_agent=(user_agent or "")[:500],
             attempt_count=0,
@@ -70,9 +84,9 @@ class RequestRepository:
         end_time = timezone.now()
         record.end_time = end_time
         record.latency = int((end_time - record.send_time).total_seconds() * 1000)
-        record.status = f"{http_status} {reason}"[:50]
+        record.status = _status_text(http_status)
         record.task_status = task_status or ("success" if 200 <= http_status < 300 else "failed")
-        record.fail_reason = None if record.task_status == "success" else reason[:100]
+        record.fail_reason = None if record.task_status == "success" else reason[:200]
         record.input_token_cnt = input_tokens or 0
         record.output_token_cnt = output_tokens or 0
         update_fields = [
