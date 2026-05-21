@@ -45,7 +45,7 @@ class ProxyService:
         )
         self.stream_total_timeout = float(proxy_config.get("stream_total_timeout_seconds", 900))
         self.client_disconnect_check_interval = float(proxy_config.get("client_disconnect_check_interval_seconds", 0.5))
-        self.opencode_400_delay = float(proxy_config.get("opencode_400_delay_seconds", 180))
+        self.opencode_failure_delay = float(proxy_config.get("opencode_failure_delay_seconds", 30))
         self.circuit_breaker = CircuitBreakerService()
 
     def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None):
@@ -66,6 +66,7 @@ class ProxyService:
             candidates = self._candidates_for_request(path, model_id)
             if not candidates:
                 RequestRepository.finish(record, 503, "Service Unavailable")
+                self._maybe_delay_opencode_failure(user_agent, 503)
                 return HttpResponse(
                     json.dumps(error_payload("no online upstream server available", "service_unavailable")),
                     status=503,
@@ -159,7 +160,7 @@ class ProxyService:
                         continue
 
                     self._maybe_log_multi_server_route(record.id, attempted_server_ids, server.id)
-                    self._maybe_delay_opencode_400(user_agent, upstream.status_code)
+                    self._maybe_delay_opencode_failure(user_agent, upstream.status_code)
                     self._notify_chooser_response(server, context, upstream.status_code)
                     input_tokens, output_tokens = self._parse_json_usage(content)
                     fail_reason = self._extract_fail_reason(content, upstream.reason or "")
@@ -207,6 +208,7 @@ class ProxyService:
             status = 504 if last_status == 504 else 502
             message = "request timeout, please try again later" if status == 504 else "502 Bad Gateway"
             error_type = "gateway_timeout_error" if status == 504 else "server_error"
+            self._maybe_delay_opencode_failure(user_agent, status)
             return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
         finally:
             stop_event.set()
@@ -264,7 +266,7 @@ class ProxyService:
                     continue
 
                 self._maybe_log_multi_server_route(record.id, attempted_server_ids, server.id)
-                self._maybe_delay_opencode_400(user_agent, status_code)
+                self._maybe_delay_opencode_failure(user_agent, status_code)
 
                 if status_code >= 400:
                     content = upstream.content
@@ -304,6 +306,7 @@ class ProxyService:
         status = 504 if last_status == 504 else 502
         message = "request timeout, please try again later" if status == 504 else "502 Bad Gateway"
         error_type = "gateway_timeout_error" if status == 504 else "server_error"
+        self._maybe_delay_opencode_failure(user_agent, status)
         return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
 
     def _stream_success(self, django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context):
@@ -350,9 +353,9 @@ class ProxyService:
         RequestRepository.finish(record, 499, "Client Closed Request", task_status="agent_disconnected")
         return HttpResponse(status=499)
 
-    def _maybe_delay_opencode_400(self, user_agent: str | None, status_code: int) -> None:
-        if self.opencode_400_delay > 0 and OpencodeVersionService.should_delay_upstream_400(user_agent, status_code):
-            time.sleep(self.opencode_400_delay)
+    def _maybe_delay_opencode_failure(self, user_agent: str | None, status_code: int) -> None:
+        if self.opencode_failure_delay > 0 and OpencodeVersionService.should_delay_failure(user_agent, status_code):
+            time.sleep(self.opencode_failure_delay)
 
     @staticmethod
     def _parse_json_usage(content: bytes) -> tuple[int, int]:

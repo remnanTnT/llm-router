@@ -13,7 +13,13 @@ def test_opencode_allows_newer_versions():
     assert version == "1.2.27"
 
 
-def test_opencode_delays_400_for_1_2_27_and_below_only():
-    assert OpencodeVersionService.should_delay_upstream_400("opencode/1.2.27", 400) is True
-    assert OpencodeVersionService.should_delay_upstream_400("opencode/1.2.28", 400) is False
-    assert OpencodeVersionService.should_delay_upstream_400("opencode/1.2.27", 500) is False
+def test_opencode_delays_any_failure_for_opencode_clients():
+    assert OpencodeVersionService.should_delay_failure("opencode/1.2.27", 400) is True
+    assert OpencodeVersionService.should_delay_failure("opencode/1.2.30", 502) is True
+    assert OpencodeVersionService.should_delay_failure("opencode/1.2.30", 504) is True
+
+
+def test_opencode_does_not_delay_success_or_non_opencode():
+    assert OpencodeVersionService.should_delay_failure("opencode/1.2.30", 200) is False
+    assert OpencodeVersionService.should_delay_failure("curl/8.0.0", 500) is False
+    assert OpencodeVersionService.should_delay_failure(None, 500) is False

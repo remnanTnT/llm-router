@@ -22,9 +22,9 @@ class OpencodeVersionService:
     def _block_max_version(cls) -> Version:
         return Version(str(cls._config().get("block_max_version", "1.2.26")))
 
-    @classmethod
-    def _delay_400_max_version(cls) -> Version:
-        return Version(str(cls._config().get("delay_400_max_version", "1.2.27")))
+    @staticmethod
+    def is_opencode(user_agent: str | None) -> bool:
+        return bool(user_agent) and OPENCODE_UA_RE.search(user_agent) is not None
 
     @staticmethod
     def extract_version(user_agent: str | None) -> Version | None:
@@ -48,8 +48,7 @@ class OpencodeVersionService:
         return False, str(version) if version is not None else None
 
     @classmethod
-    def should_delay_upstream_400(cls, user_agent: str | None, status_code: int) -> bool:
+    def should_delay_failure(cls, user_agent: str | None, status_code: int) -> bool:
         if not cls._enabled():
             return False
-        version = cls.extract_version(user_agent)
-        return status_code == 400 and version is not None and version <= cls._delay_400_max_version()
+        return status_code >= 400 and cls.is_opencode(user_agent)

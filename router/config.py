@@ -22,7 +22,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "normal_read_timeout_seconds": 900,
         "client_disconnect_check_interval_seconds": 0.5,
         "stale_processing_minutes": 20,
-        "opencode_400_delay_seconds": 180,
+        "opencode_failure_delay_seconds": 180,
     },
     "load_balancer": {
         "enabled": True,
@@ -46,7 +46,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "opencode": {
         "enabled": True,
         "block_max_version": "1.2.26",
-        "delay_400_max_version": "1.2.27",
     },
     "admission": {"allow_when_user_info_missing": True},
     "cmdb": {"enabled": False, "dummy": True, "refresh_interval_between_ips_seconds": 1},

@@ -18,7 +18,7 @@ proxy:
   normal_read_timeout_seconds: 900
   client_disconnect_check_interval_seconds: 0.5
   stale_processing_minutes: 20
-  opencode_400_delay_seconds: 180
+  opencode_failure_delay_seconds: 180
 
 load_balancer:
   enabled: true
@@ -36,7 +36,6 @@ prefix_cache:
 opencode:
   enabled: true
   block_max_version: "1.2.26"
-  delay_400_max_version: "1.2.27"
 
 database:
   host: localhost
