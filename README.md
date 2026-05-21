@@ -1,423 +1,89 @@
 # llm-router
 
-A Django-based LLM router/gateway for OpenAI-compatible `/v1/*` APIs.
-
-The router sits between clients and an upstream LLM service. It proxies requests, records request metadata, checks admission rules, enforces model token/concurrency limits, and keeps the CMDB integration as a dummy module that can be replaced later.
-
-## Current Scope
-
-Implemented in this phase:
-
-- `/healthy` health check
-- `/v1/<path>` reverse proxy
-- Streaming and non-streaming upstream responses
-- Request body parsing and injection
-  - injects `stream_options.include_usage=true` for streaming requests
-  - injects default `max_tokens` when missing
-- Existing-schema database models with `managed = False`
-- IP get-or-create
-- Permission check through `user_ips`, `departments`, and `whitelist`
-- opencode User-Agent compatibility behavior
-  - blocks `opencode/<=1.2.26`
-  - delays upstream HTTP 400 responses for `opencode/<=1.2.27`
-- Model `max_tokens` validation
-- Per-IP/per-model concurrency check
-- Request lifecycle recording in the existing `requests` table
-- Dummy CMDB service and `/api/refresh_user_info`
-- Whitelist update API
-- Statistics APIs
-- AI Assistant download API
-
-Not implemented in this phase:
-
-- Admin UI
-- Database schema migrations that alter tables
-- Real CMDB integration
-- Redis-based concurrency counters
-
-## Requirements
-
-- Python 3.11+
-- PostgreSQL with the existing schema already created
-- Upstream OpenAI-compatible LLM service
-
-Python packages are listed in `requirements.txt`.
-
-## Database Schema
-
-The database schema is intentionally not managed by this project.
-
-The router expects these existing tables:
-
-- `ips`
-- `departments`
-- `user_ips`
-- `models`
-- `requests`
-- `whitelist`
-- `servers`
-
-Django models are unmanaged (`managed = False`) and no schema-changing migrations should be generated or applied.
-
-All datetime columns should use `TIMESTAMPTZ`. The router runs with `TIME_ZONE = Asia/Shanghai` and sets the database connection time zone to `Asia/Shanghai`, so request lifecycle times such as `send_time` and `end_time` are saved and read in Beijing time.
-
-Example `servers` table:
-
-```sql
-CREATE TABLE servers (
-    id BIGSERIAL PRIMARY KEY,
-    model_id INTEGER NULL,
-    base_url VARCHAR(500) NOT NULL UNIQUE,
-    is_online BOOLEAN NOT NULL DEFAULT TRUE,
-    weight INTEGER NOT NULL DEFAULT 1,
-    health_path VARCHAR(200) NOT NULL DEFAULT '/healthy',
-    last_checked_at TIMESTAMPTZ NULL,
-    last_failure_at TIMESTAMPTZ NULL,
-    cache_time INTEGER NOT NULL DEFAULT 3600,
-    csb_token VARCHAR(500) NULL,
-    created_at TIMESTAMPTZ NULL,
-    updated_at TIMESTAMPTZ NULL,
-    deleted_at TIMESTAMPTZ NULL
-);
-
-CREATE INDEX servers_online_model_idx
-    ON servers (is_online, model_id)
-    WHERE deleted_at IS NULL;
-```
-
-Create the request-table indexes from `sql/requests_indexes.sql` on PostgreSQL. The processing partial indexes are required for the LLM request hot path because the `requests` table can be very large while active `processing` rows are small. Run these outside a transaction because they use `CREATE INDEX CONCURRENTLY`.
-
-The load balancer also records the selected backend and number of backend attempts per request:
-
-```sql
-ALTER TABLE servers ADD COLUMN cache_time INTEGER NOT NULL DEFAULT 3600;
-ALTER TABLE requests ALTER COLUMN target_pod_ip TYPE VARCHAR(500);
-ALTER TABLE requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE requests ADD COLUMN prefix_cache DOUBLE PRECISION NOT NULL DEFAULT 0;
-ALTER TABLE requests ADD COLUMN last_match BIGINT NULL;
-```
-
-## Configuration
-
-Default configuration is in `config.yaml`.
-
-Important settings:
-
-```yaml
-proxy_url: http://localhost:8051
-log_path: ./logs/requests
-
-proxy:
-  default_max_tokens: 8528
-  unknown_model_max_tokens: 20480
-  stream_connect_timeout_seconds: 30
-  stream_read_timeout_seconds: 900
-  stream_total_timeout_seconds: 900
-  normal_connect_timeout_seconds: 5
-  normal_read_timeout_seconds: 900
-  client_disconnect_check_interval_seconds: 0.5
-  stale_processing_minutes: 20
-  opencode_400_delay_seconds: 180
-
-load_balancer:
-  enabled: true
-  max_attempts_per_request: 3
-  retry_status_codes: [502, 503, 504]
-  mark_unhealthy_status_codes: [502, 503, 504]
-  health_check_timeout_seconds: 2
-  chooser_class: router.route_algorithm.prefix_cache_preble.PrefixCachePrebleServerChooser
-
-prefix_cache:
-  primary_match_threshold: 0.9
-  secondary_match_threshold: 0.5
-  max_prefix_tokens: 100000
-
-opencode:
-  enabled: true
-  block_max_version: "1.2.26"
-  delay_400_max_version: "1.2.27"
-
-database:
-  host: localhost
-  port: 5432
-  user: postgres
-  password: postgres
-  name: postgres
-  sslmode: disable
-```
-
-You can point the router to another config file with:
-
-```bash
-export LLM_ROUTER_CONFIG=/path/to/config.yaml
-```
-
-Database values can also be overridden with environment variables:
-
-```bash
-export DB_HOST=localhost
-export DB_PORT=5432
-export DB_USER=postgres
-export DB_PASSWORD=postgres
-export DB_NAME=postgres
-export DB_SSLMODE=disable
-```
-
-Other useful environment variables:
-
-```bash
-export DJANGO_SECRET_KEY='change-me'
-export DJANGO_DEBUG=0
-export PROXY_URL=http://localhost:8051
-export PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD=0.9
-export PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD=0.5
-```
-
-## Local Setup
-
-Create a virtual environment and install dependencies:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-Validate that Django can load:
-
-```bash
-python manage.py check
-```
-
-Validate database connectivity and required tables:
-
-```bash
-python manage.py init_db
-```
-
-Check schema presence without changing anything:
-
-```bash
-python manage.py check_db_schema --dry-run
-```
-
-## Run Locally With Django Dev Server
-
-```bash
-python manage.py runserver 0.0.0.0:8001
-```
-
-Health check:
-
-```bash
-curl http://localhost:8001/healthy
-```
-
-Expected response:
-
-```json
-{"status": "healthy"}
-```
-
-## Run With Gunicorn
-
-Gunicorn is the recommended way to run the router outside local development.
-
-Production start script:
-
-```bash
-./start_prod.sh
-```
-
-Defaults:
-
-- HTTP port: `8001`
-- Database host: `localhost`
-- Database port: `5431`
-- Workers: `8`
-- Threads per worker: `32`
-
-Test start script:
-
-```bash
-./start_test.sh
-```
-
-Defaults:
-
-- HTTP port: `9000`
-- Database host: `localhost`
-- Database port: `5432`
-- Workers: `1`
-- Threads per worker: `8`
-
-Both scripts use `config.yaml` by default and can be overridden with environment variables:
-
-```bash
-DB_HOST=127.0.0.1 \
-DB_PORT=5433 \
-LLM_ROUTER_CONFIG=/path/to/config.yaml \
-GUNICORN_WORKERS=4 \
-GUNICORN_THREADS=16 \
-./start_prod.sh
-```
-
-Equivalent production Gunicorn command:
-
-```bash
-gunicorn router_project.wsgi:application \
-  --bind 0.0.0.0:8001 \
-  --workers 8 \
-  --threads 32 \
-  --worker-class gthread \
-  --timeout 960 \
-  --graceful-timeout 1200 \
-  --max-requests 1000 \
-  --max-requests-jitter 200 \
-  --access-logfile - \
-  --error-logfile -
-```
-
-The `gthread` worker is important because the router includes client-disconnect tracking designed for the Gunicorn threaded worker model. For non-stream requests, the router watches the downstream client socket and closes the upstream LLM connection when the client disconnects; vLLM should then stop the abandoned request when it observes the closed connection.
-
-## API Endpoints
-
-### Health
-
-```http
-GET /healthy
-```
-
-Returns `200` when the app and database are healthy. Returns `503` when the database check fails.
-
-### Proxy
-
-```http
-/v1/<path>
-```
-
-All `/v1/*` requests are proxied to an online row from `servers` for the request `model_id` with the same path and query string. `/v1/models` requests do not need a `model_id` and are routed to a random online server. `proxy_url` remains as a legacy fallback when `load_balancer.enabled` is disabled.
-
-Example server rows:
-
-```sql
-INSERT INTO servers (model_id, base_url, is_online)
-VALUES
-  (7, 'http://10.0.0.11:8000', true),
-  (7, 'http://10.0.0.12:8000', true),
-  (8, 'http://10.0.0.20:8000', true);
-```
-
-The default chooser is prefix-cache-preble: before each backend attempt, the router records the server `base_url` in `target_pod_ip`, records `attempt_count`, records the best prefix-cache `match_ratio` in `prefix_cache`, and records the historical request id that produced that best match in `last_match` (`NULL` when there is no match) on the processing request row. If prefix `match_ratio > prefix_cache.primary_match_threshold` (`0.9` by default), it chooses the least-loaded cached server; otherwise it chooses the least-loaded online server. The secondary threshold is configured with `prefix_cache.secondary_match_threshold` (`0.5` by default). These can be overridden with `PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD` and `PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD`. Prefix cache metadata is marked only after a successful response completes.
-
-Use `python manage.py check_server_health --recover-offline` from cron or a scheduler to actively probe server health. Passive request failures also mark servers offline and the router retries another online candidate when it is still safe to do so.
-
-Example:
-
-```bash
-curl -i http://localhost:8001/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}'
-```
-
-### Statistics APIs
-
-```http
-GET /api/request_stats
-GET /api/total_request_count
-GET /api/model_request_stats
-GET /api/all_model_request_stats
-GET /api/models
-GET /api/model_info
-GET /api/request_time_stats
-GET /api/model_request_time_stats
-GET /api/model_request_count_by_period
-GET /api/model_ip_count_by_period
-GET /api/model_latency_boxplot
-```
-
-Statistics endpoints use query-string parameters. Time ranges use Beijing-local `YYYY-MM-DD HH:mm:ss` values.
-
-### AI Assistant Download
-
-```http
-GET /api/download/ai_assistant
-```
-
-Downloads `/home/AI_Assistant/AI_Assistant.exe` as `application/octet-stream`.
-
-### Whitelist Update
-
-```http
-POST /api/whitelist/update
-```
-
-JSON example:
-
-```bash
-curl -i -X POST http://localhost:8001/api/whitelist/update \
-  -H 'Content-Type: application/json' \
-  -d '{"employee_no":"E001","is_allowed":1}'
-```
-
-### Refresh User Info
-
-```http
-POST /api/refresh_user_info
-```
-
-Starts the dummy CMDB refresh flow in a background thread:
-
-```bash
-curl -i -X POST http://localhost:8001/api/refresh_user_info
-```
-
-The current CMDB implementation is a no-op placeholder. It preserves the API and call flow so real corporate CMDB code can be added later.
-
-## Management Commands
-
-Validate required tables:
-
-```bash
-python manage.py init_db
-```
-
-Check schema presence:
-
-```bash
-python manage.py check_db_schema --dry-run
-```
-
-Clean stale processing requests:
-
-```bash
-python manage.py cleanup_stale_processing --threshold 20
-```
-
-Dry run:
-
-```bash
-python manage.py cleanup_stale_processing --threshold 20 --dry-run
-```
-
-## Tests
-
-Run unit tests:
-
-```bash
-python -m pytest tests
-```
-
-Current tests cover:
-
-- Request parser injection
-- opencode version policy
-- Header filtering
-- SSE usage parsing
-- OpenAI-compatible error response shape
+A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one or more OpenAI-compatible LLM inference servers (e.g. vLLM / SGLang clusters exposed via `/v1/...`). It performs admission control, prefix-cache-aware load balancing across upstream pods, retry / circuit-breaker / cancellable-upstream handling for both streaming (SSE) and non-streaming responses, and records every request's full lifecycle into PostgreSQL for monitoring and analytics. PostgreSQL is the source of truth for `ips`, `user_ips`, `departments`, `models`, `servers`, `requests`, and `whitelist`; the router declares those models as unmanaged and validates the live schema with dedicated commands.
+
+## Documentation
+
+- [Database Schema](docs/database_schema.md)
+- [Configuration](docs/configuration.md)
+- [Setup](docs/setup.md)
+- [API Endpoints](docs/api_endpoints.md)
+- [Management Commands](docs/management_commands.md)
+- [Tests](docs/tests.md)
+
+## All Functions
+
+- **Reverse Proxy / Gateway**
+  - `/v1/<path>` catch-all proxy for OpenAI-compatible APIs (all HTTP methods, CSRF-exempt)
+  - Streaming (SSE) and non-streaming forwarding with independent connect / read / total timeouts
+  - Request body parsing: extracts `model` / `stream` / `max_tokens`, injects `stream_options.include_usage=true`, defaults missing `max_tokens`
+  - Hop-by-hop / `Host` / `Content-Length` / `Content-Encoding` header stripping; per-server `csb-token` injection
+  - Client-disconnect tracking via `gunicorn.socket` + `MSG_PEEK`; cancels upstream request and records HTTP 499 / `agent_disconnected`
+  - Cancellable upstream HTTP client (custom urllib3 `PoolManager`/`Connection` that force-closes sockets on cancel)
+  - `413 Request Entity Too Large` handling for oversize bodies
+  - Special routing: `GET /v1/models` is dispatched to a random online server
+
+- **Load Balancing & Server Selection**
+  - Pluggable `ServerChooser` protocol with `ServerSelectionContext`
+  - `PrefixCachePrebleServerChooser` (default): in-process tokenized prefix cache, primary/secondary match thresholds, least-loaded-among-matches selection, per-server `cache_time` eviction
+  - `LeastConnectionServerChooser`: picks server with fewest in-flight `processing` requests
+  - Configurable retry on `retry_status_codes` (default 502/503/504), bounded by `max_attempts_per_request`
+  - Per-attempt logging of `server_attempt` and `multi_server_route` events
+  - `servers.workload` counter incremented before send and decremented after (or by stale cleanup)
+
+- **Circuit Breaker & Health Probing**
+  - Three states on `servers.circuit_state`: `closed` / `open` / `half_open`
+  - Failure counter with `failure_threshold`; exponential cooldown capped at `max_cooldown_seconds`
+  - Cooldown-expired servers auto-transition to `half_open` on next listing
+  - Active `ServerHealthService` probes `GET <base_url>/<health_path>`; passive failures from `mark_unhealthy_status_codes` also trip the breaker
+
+- **Admission Control & Permissions**
+  - IP auto-creation on first request; background CMDB lookup for new IPs
+  - Permission chain: `user_ips` → `departments.is_allowed` → `whitelist.is_allowed`, with a configurable fallback when user info is missing
+  - `check_max_tokens`: rejects when request exceeds model's `max_tokens` (or `unknown_model_max_tokens`)
+  - `check_concurrency`: per-(IP, model) limit using `ceil(model.concurrent_limit × ip.concurrent_multiplier)`; cleans stale rows before counting
+
+- **Opencode Client Compatibility**
+  - Parses `opencode/<X.Y.Z>` from `User-Agent`
+  - Hard-blocks clients ≤ `opencode.block_max_version` (default 1.2.26)
+  - Delays upstream 400 responses for clients ≤ `opencode.delay_400_max_version` (default 1.2.27) to slow buggy retry storms
+
+- **Request Lifecycle Tracking**
+  - `processing` row inserted at proxy start; admission denials inserted directly as `failed`
+  - Per-attempt update of `attempt_count`, `target_pod_ip`, `prefix_cache` (best match ratio), `last_match` (matched request id)
+  - Final state: `end_time`, `latency`, `status`, `task_status` (`success` / `failed` / `agent_disconnected` / `incomplete`), token counts; auto-creates `models` row on successful unknown-model response
+  - Per-request log file `logs/requests/<id>.log` and per-day error log `logs/requests/YYYY/MM/DD/<id>.log` with redacted sensitive headers
+  - Stale `processing` cleanup flips rows to `incomplete` and decrements workload counters
+
+- **Statistics & Monitoring API**
+  - `request_stats`, `total_request_count`, `model_request_stats`, `all_model_request_stats`
+  - `request_time_stats`, `model_request_time_stats` (bucketed average latency)
+  - `model_request_count_by_period`, `model_ip_count_by_period` (bucketed counts)
+  - `model_latency_boxplot`: min/Q1/median/Q3/max + over-limit ratio, drops > 890s, trims top 1%
+  - `models`, `model_info` model catalog endpoints; automatic hour/day/month granularity selection in Asia/Shanghai
+
+- **Management & Admin APIs**
+  - `POST /api/whitelist/update` — upsert whitelist entry by `employee_no`
+  - `POST /api/refresh_user_info` — kick off CMDB user refresh thread (requires `cmdb.enabled`)
+  - `POST /api/add_server` — register a new upstream server after verifying its `/models`
+  - `GET /api/download/ai_assistant` — download `AI_Assistant.exe`
+
+- **Management Commands**
+  - `init_db` — validate DB connectivity and required tables
+  - `check_db_schema` — diff live schema against Django models; `--fix` emits/executes corrective DDL
+  - `check_server_health` — probe servers, update circuit-breaker state, optionally recover offline servers
+  - `cleanup_stale_processing` — drain abandoned `processing` rows and decrement workload counters
+
+- **Configuration**
+  - `config.yaml` (overridable via `LLM_ROUTER_CONFIG`) deep-merged onto built-in defaults
+  - Env-var overrides for DB, `PROXY_URL`, prefix-cache thresholds, Django secret/debug, test SQLite mode
+  - `start_prod.sh` (port 8001, 8×32) and `start_test.sh` (port 9000, 1×8) gunicorn launchers
+  - WSGI entrypoint validates DB connectivity on boot; `ClientDisconnectMiddleware` registered globally
+
+- **Tests**
+  - 19 pytest files covering proxy, parser, headers, SSE, errors, server choosers, circuit breaker, cancellable upstream, disconnect tracking, request logger, requests repository, workload accounting, schema check, management API, downloads, statistics API, opencode policy, manage.py wrapper, and config env overrides
 
 ## Notes
 
 - Do not run `makemigrations` for schema changes unless the database ownership model changes.
-- Do not add Statistics APIs in the router-only phase.
 - Do not commit real database passwords, upstream API keys, or corporate CMDB credentials.
