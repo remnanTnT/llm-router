@@ -36,3 +36,12 @@ Flips `processing` rows older than the threshold (default 20 minutes) to `incomp
 python manage.py prod cleanup_stale_processing --threshold 20
 python manage.py prod cleanup_stale_processing --threshold 20 --dry-run
 ```
+
+## `release_vip_cooldowns`
+
+Demotes VIP servers whose `vip_cooldown` timestamp is older than the configured cooldown period (default 300 seconds). Useful for cron when VIP traffic is idle for long periods.
+
+```bash
+python manage.py prod release_vip_cooldowns
+python manage.py prod release_vip_cooldowns --cooldown 600 --dry-run
+```

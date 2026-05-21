@@ -24,9 +24,15 @@ def _status_text(code: int) -> str:
 
 class RequestRepository:
     @staticmethod
-    def create_processing(ip_id: int | None, model_id: int, is_stream: bool, user_agent: str | None) -> RequestRecord:
+    def create_processing(
+        ip_id: int | None,
+        model_id: int,
+        is_stream: bool,
+        user_agent: str | None,
+        user_ip_id: int = 1,
+    ) -> RequestRecord:
         return RequestRecord.objects.create(
-            user_ip_id=1,
+            user_ip_id=user_ip_id,
             ip_id=ip_id,
             send_time=timezone.now(),
             model_id=model_id,
@@ -48,10 +54,11 @@ class RequestRepository:
         user_agent: str | None,
         status_code: int,
         fail_reason: str,
+        user_ip_id: int = 1,
     ) -> RequestRecord:
         now = timezone.now()
         return RequestRecord.objects.create(
-            user_ip_id=1,
+            user_ip_id=user_ip_id,
             ip_id=ip_id,
             send_time=now,
             end_time=now,
@@ -162,6 +169,12 @@ class RequestRepository:
             .values("target_pod_ip")
             .annotate(count=models.Count("id"))
         }
+
+    @staticmethod
+    def count_vip_processing(model_id: int) -> int:
+        return RequestRecord.objects.filter(
+            task_status="processing", user_ip_id=2, model_id=model_id
+        ).count()
 
     @staticmethod
     def count_distinct_ips(start: datetime, end: datetime) -> int:

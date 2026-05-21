@@ -1,9 +1,13 @@
-proxy_url: http://localhost:8051
 log_path: ./logs/requests
 
 server:
   bind: 0.0.0.0:8001
+  vip_port: 8008
   data_upload_max_memory_size_mb: 50
+
+vip:
+  cooldown_seconds: 300
+  min_normal_servers: 2
 
 proxy:
   default_max_tokens: 8528
@@ -18,7 +22,6 @@ proxy:
   opencode_failure_delay_seconds: 180
 
 load_balancer:
-  enabled: true
   max_attempts_per_request: 3
   retry_status_codes: [502, 503, 504]
   mark_unhealthy_status_codes: [502, 503, 504]

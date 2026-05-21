@@ -14,7 +14,7 @@ Returns `200` when the app and database are healthy. Returns `503` when the data
 ANY /v1/<path>
 ```
 
-All `/v1/*` requests are proxied to an online row from `servers` for the request `model_id` with the same path and query string. `/v1/models` requests do not need a `model_id` and are routed to a random online server. `proxy_url` remains as a legacy fallback when `load_balancer.enabled` is disabled.
+All `/v1/*` requests are proxied to an online row from `servers` for the request `model_id` with the same path and query string. `/v1/models` requests do not need a `model_id` and are routed to a random online server.
 
 Example server rows:
 

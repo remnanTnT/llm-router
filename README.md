@@ -31,6 +31,14 @@ A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one 
   - Per-attempt logging of `server_attempt` and `multi_server_route` events
   - `servers.workload` counter incremented before send and decremented after (or by stale cleanup)
 
+- **VIP Channel**
+  - Second listening port (`server.vip_port`, default 8008 prod / 9001 test) routes traffic to a dedicated VIP server pool for VIP-eligible models (`models.vip > 0` is the workload threshold)
+  - Router-managed `servers.vip` and `servers.vip_cooldown` track pool membership; non-VIP traffic never lands on VIP servers
+  - Scale-up: on each VIP request, if `(current_load + 1) / active_vip_servers > threshold`, cancels a cooling cooldown if any, otherwise promotes the least-loaded normal server (subject to `vip.min_normal_servers` floor, default 2)
+  - Scale-down: on each VIP request finish, if projected average drops below threshold, cools the least-loaded VIP server; if VIP load reaches zero, cools all active VIP servers; cooldowns demote after `vip.cooldown_seconds` (default 300)
+  - VIP load counted via `requests.user_ip_id = 2` so leftover normal traffic on freshly-promoted servers does not skew scaling decisions
+  - `release_vip_cooldowns` management command demotes expired cooldowns when the VIP channel is fully idle
+
 - **Circuit Breaker & Health Probing**
   - Three states on `servers.circuit_state`: `closed` / `open` / `half_open`
   - Failure counter with `failure_threshold`; exponential cooldown capped at `max_cooldown_seconds`
@@ -73,15 +81,16 @@ A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one 
   - `check_db_schema` — diff live schema against Django models; `--fix` emits/executes corrective DDL
   - `check_server_health` — probe servers, update circuit-breaker state, optionally recover offline servers
   - `cleanup_stale_processing` — drain abandoned `processing` rows and decrement workload counters
+  - `release_vip_cooldowns` — demote VIP servers whose `vip_cooldown` has expired
 
 - **Configuration**
   - `config.yaml` (overridable via `LLM_ROUTER_CONFIG`) deep-merged onto built-in defaults
-  - Env-var overrides for DB, `PROXY_URL`, prefix-cache thresholds, Django secret/debug, test SQLite mode
-  - `start_prod.sh` (port 8001, 8×32) and `start_test.sh` (port 9000, 1×8) gunicorn launchers
+  - Env-var overrides for DB, `VIP_PORT`, prefix-cache thresholds, Django secret/debug, test SQLite mode
+  - `start_prod.sh` (ports 8001+8008, 8×32) and `start_test.sh` (ports 9000+9001, 1×8) gunicorn launchers
   - WSGI entrypoint validates DB connectivity on boot; `ClientDisconnectMiddleware` registered globally
 
 - **Tests**
-  - 19 pytest files covering proxy, parser, headers, SSE, errors, server choosers, circuit breaker, cancellable upstream, disconnect tracking, request logger, requests repository, workload accounting, schema check, management API, downloads, statistics API, opencode policy, manage.py wrapper, and config env overrides
+  - 20 pytest files covering proxy, parser, headers, SSE, errors, server choosers, circuit breaker, cancellable upstream, disconnect tracking, request logger, requests repository, workload accounting, schema check, management API, downloads, statistics API, opencode policy, manage.py wrapper, config env overrides, and VIP channel
 
 ## Notes
 

@@ -9,9 +9,12 @@ import yaml
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "proxy_url": "http://localhost:8051",
     "log_path": "./logs/requests",
-    "server": {"data_upload_max_memory_size_mb": 50},
+    "server": {"data_upload_max_memory_size_mb": 50, "vip_port": 8008},
+    "vip": {
+        "cooldown_seconds": 300,
+        "min_normal_servers": 2,
+    },
     "proxy": {
         "default_max_tokens": 8528,
         "unknown_model_max_tokens": 20480,
@@ -25,7 +28,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "opencode_failure_delay_seconds": 180,
     },
     "load_balancer": {
-        "enabled": True,
         "max_attempts_per_request": 3,
         "retry_status_codes": [502, 503, 504],
         "mark_unhealthy_status_codes": [502, 503, 504],
@@ -89,8 +91,11 @@ def load_config() -> dict[str, Any]:
     }.items():
         if env_key in os.environ:
             database[config_key] = os.environ[env_key]
-    if "PROXY_URL" in os.environ:
-        config["proxy_url"] = os.environ["PROXY_URL"]
+    if "VIP_PORT" in os.environ:
+        try:
+            config.setdefault("server", {})["vip_port"] = int(os.environ["VIP_PORT"])
+        except (TypeError, ValueError):
+            pass
     if "PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD" in os.environ:
         config.setdefault("prefix_cache", {})["primary_match_threshold"] = os.environ["PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD"]
     if "PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD" in os.environ:

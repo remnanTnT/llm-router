@@ -5,8 +5,16 @@ Default configuration is in `config.yaml`. Values are deep-merged onto built-in 
 ## `config.yaml`
 
 ```yaml
-proxy_url: http://localhost:8051
 log_path: ./logs/requests
+
+server:
+  bind: 0.0.0.0:8001
+  vip_port: 8008
+  data_upload_max_memory_size_mb: 50
+
+vip:
+  cooldown_seconds: 300
+  min_normal_servers: 2
 
 proxy:
   default_max_tokens: 8528
@@ -21,7 +29,6 @@ proxy:
   opencode_failure_delay_seconds: 180
 
 load_balancer:
-  enabled: true
   max_attempts_per_request: 3
   retry_status_codes: [502, 503, 504]
   mark_unhealthy_status_codes: [502, 503, 504]
@@ -63,6 +70,7 @@ export DB_USER=postgres
 export DB_PASSWORD=postgres
 export DB_NAME=postgres
 export DB_SSLMODE=disable
+export VIP_PORT=8008
 ```
 
 Other useful environment variables:
@@ -70,7 +78,6 @@ Other useful environment variables:
 ```bash
 export DJANGO_SECRET_KEY='change-me'
 export DJANGO_DEBUG=0
-export PROXY_URL=http://localhost:8051
 export PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD=0.9
 export PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD=0.5
 export USE_SQLITE_FOR_TESTS=1
