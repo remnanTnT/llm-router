@@ -30,6 +30,7 @@ def test_refresh_user_info_starts_background_thread(monkeypatch):
             started["started"] = True
 
     monkeypatch.setattr(views.threading, "Thread", FakeThread)
+    monkeypatch.setitem(views.APP_CONFIG, "cmdb", {**views.APP_CONFIG.get("cmdb", {}), "enabled": True})
 
     response = Client().post("/api/refresh_user_info")
 

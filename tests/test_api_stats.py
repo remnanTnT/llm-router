@@ -127,11 +127,11 @@ def test_period_counts_fill_missing_buckets_and_count_distinct_ips():
 
     count_response = client.get(
         "/api/model_request_count_by_period",
-        {"start_time": "2026-01-01 00:00:00", "end_time": "2026-01-01 02:00:00", "model_name": "model-a"},
+        {"start_time": "2026-01-01 00:00:00", "end_time": "2026-01-01 02:30:00", "model_name": "model-a"},
     )
     ip_response = client.get(
         "/api/model_ip_count_by_period",
-        {"start_time": "2026-01-01 00:00:00", "end_time": "2026-01-01 02:00:00", "model_name": "model-a"},
+        {"start_time": "2026-01-01 00:00:00", "end_time": "2026-01-01 02:30:00", "model_name": "model-a"},
     )
 
     assert count_response.status_code == 200

@@ -3,6 +3,11 @@ from django.apps import apps
 from django.core.management import call_command
 from django.db import connection
 
+postgres_only = pytest.mark.skipif(
+    connection.vendor != "postgresql",
+    reason="requires PostgreSQL (uses DROP CONSTRAINT / pg_index)",
+)
+
 
 @pytest.fixture(scope="module", autouse=True)
 def all_router_tables():
@@ -89,6 +94,7 @@ def test_check_db_schema_fix_drops_extra_column(capsys):
     assert not has_column("servers", "metrics_port")
 
 
+@postgres_only
 def test_check_db_schema_reports_missing_unique_constraint(capsys):
     with connection.schema_editor() as schema_editor:
         schema_editor.execute('ALTER TABLE "servers" DROP CONSTRAINT IF EXISTS "servers_base_url_key";')
@@ -104,6 +110,7 @@ def test_check_db_schema_reports_missing_unique_constraint(capsys):
         schema_editor.execute('ALTER TABLE "servers" ADD CONSTRAINT "servers_base_url_key" UNIQUE ("base_url");')
 
 
+@postgres_only
 def test_check_db_schema_fix_adds_missing_unique_constraint(capsys):
     with connection.schema_editor() as schema_editor:
         schema_editor.execute('ALTER TABLE "servers" DROP CONSTRAINT IF EXISTS "servers_base_url_key";')
