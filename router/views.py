@@ -45,8 +45,9 @@ def proxy(request, path: str):
     try:
         body = request.body
     except RequestDataTooBig:
-        RequestRepository.create_blocked(None, 0, None, user_agent, 413, "request body too large")
-        return error_response(413, "Request body exceeds the maximum allowed size", "request_too_large")
+        message = "Request body exceeds the maximum allowed size"
+        RequestRepository.create_blocked(None, 0, None, user_agent, 413, message)
+        return error_response(413, message, "request_too_large")
     except Exception:
         return HttpResponse(status=499)
 
@@ -58,36 +59,45 @@ def proxy(request, path: str):
         admission = AdmissionService()
         permission = admission.check_permission(ip)
         if not permission.allowed:
-            RequestRepository.create_blocked(ip.id, 0, None, user_agent, 403, "permission denied")
-            return error_response(permission.status_code, permission.message or "Forbidden", permission.error_type or "permission_denied")
+            message = permission.message or "Access denied, you do not have permission"
+            RequestRepository.create_blocked(ip.id, 0, None, user_agent, 403, message)
+            return error_response(permission.status_code, message, permission.error_type or "permission_denied")
 
         blocked, version = OpencodeVersionService.should_block(user_agent)
         if blocked:
             message = f"Your opencode version ({version}) is no longer supported. Please upgrade opencode to latest version."
-            RequestRepository.create_blocked(ip.id, 0, None, user_agent, 403, "version too old")
+            RequestRepository.create_blocked(ip.id, 0, None, user_agent, 403, message)
             return error_response(403, message, "version_too_old")
 
         parser = RequestParser(int(APP_CONFIG.get("proxy", {}).get("default_max_tokens", 8528)))
         parsed = parser.parse(body)
         model = ModelRepository.get_by_name(parsed.model_name)
 
+        if model and model.deprecation:
+            message = model.deprecation
+            RequestRepository.create_blocked(ip.id, model.id, parsed.stream, user_agent, 400, message)
+            return error_response(400, message, "invalid_request_error")
+
         max_token_check = admission.check_max_tokens(parsed.max_tokens, model)
         if not max_token_check.allowed:
-            RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 400, "max_tokens exceeded")
-            return error_response(max_token_check.status_code, max_token_check.message or "invalid request", max_token_check.error_type or "invalid_request_error")
+            message = max_token_check.message or "invalid request"
+            RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 400, message)
+            return error_response(max_token_check.status_code, message, max_token_check.error_type or "invalid_request_error")
 
         concurrency = admission.check_concurrency(ip, model)
         if not concurrency.allowed:
-            RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 429, "concurrent limit exceeded")
-            return error_response(concurrency.status_code, concurrency.message or "concurrent limit exceeded", concurrency.error_type or "concurrent_limit_exceeded")
+            message = concurrency.message or "concurrent limit exceeded"
+            RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 429, message)
+            return error_response(concurrency.status_code, message, concurrency.error_type or "concurrent_limit_exceeded")
 
         return ProxyService().forward(request, path, parsed, ip.id, model, user_agent, is_vip_channel=is_vip_channel)
-    except Exception as exc:
+    except Exception:
+        message = "502 Bad Gateway"
         model_id = model.id if model else 0
         ip_id = ip.id if ip else None
         is_stream = parsed.stream if parsed else None
-        RequestRepository.create_blocked(ip_id, model_id, is_stream, user_agent, 502, str(exc)[:200])
-        return error_response(502, "502 Bad Gateway", "server_error")
+        RequestRepository.create_blocked(ip_id, model_id, is_stream, user_agent, 502, message)
+        return error_response(502, message, "server_error")
 
 
 @csrf_exempt

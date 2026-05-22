@@ -32,6 +32,8 @@ def api_test_tables():
                 schema_editor.add_field(Server, Server._meta.get_field(col))
         if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "vip"):
             schema_editor.add_field(Model, Model._meta.get_field("vip"))
+        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "deprecation"):
+            schema_editor.add_field(Model, Model._meta.get_field("deprecation"))
     yield
 
 

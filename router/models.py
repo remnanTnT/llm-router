@@ -51,6 +51,7 @@ class Model(models.Model):
     concurrent_limit = models.IntegerField(blank=True, null=True, default=3)
     max_tokens = models.IntegerField(default=20480)
     vip = models.IntegerField(blank=True, null=True)
+    deprecation = models.CharField(max_length=500, blank=True, null=True)
 
     class Meta:
         managed = False
