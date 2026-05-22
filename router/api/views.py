@@ -249,48 +249,115 @@ def _average_latency_stats(start, end, model_id: int | None = None):
 def add_server(request):
     import json
     import requests as http_requests
+    from django.utils import timezone
+    from router.models import Model, Server, ServerOperation
 
     try:
-        data = json.loads(request.body)
+        payload = json.loads(request.body)
     except (json.JSONDecodeError, ValueError):
         return _bad_request("invalid JSON body")
 
-    base_url = data.get("base_url", "").strip()
-    if not base_url:
-        return _bad_request("base_url is required")
+    if isinstance(payload, dict):
+        servers_data = [payload]
+    elif isinstance(payload, list):
+        servers_data = payload
+    else:
+        return _bad_request("payload must be a dictionary or a list")
 
-    if not base_url.rstrip("/").endswith("/v1"):
-        return _bad_request("base_url must end with /v1")
+    # Disallow operation one server multiple times in one request
+    base_urls = [s.get("base_url", "").strip() for s in servers_data if isinstance(s, dict)]
+    if len(base_urls) != len(set(base_urls)):
+        return _bad_request("duplicate base_url in request")
 
-    model_name = data.get("model_name", "").strip()
-    if not model_name:
-        return _bad_request("model_name is required")
+    now = timezone.now()
+    results = []
+    for data in servers_data:
+        if not isinstance(data, dict):
+            results.append({"error": "invalid item in list, must be a dictionary"})
+            continue
 
-    from router.models import Model, Server
+        base_url = data.get("base_url", "").strip()
+        model_name = data.get("model_name", "").strip()
 
-    if Server.objects.filter(base_url=base_url).exists():
-        return _bad_request("base_url already exists")
+        operation = ServerOperation.objects.create(
+            operation_type="add_server",
+            request_data=data,
+            status="pending",
+            created_at=now,
+            updated_at=now,
+        )
 
-    # Verify server is reachable and serves the expected model
-    verify_url = base_url.rstrip("/") + "/models"
-    try:
-        resp = http_requests.get(verify_url, timeout=10)
-        resp.raise_for_status()
-        models_data = resp.json()
-    except Exception as e:
-        return _bad_request(f"failed to reach server at {verify_url}: {e}")
+        if not base_url:
+            operation.status = "failed"
+            operation.error_message = "base_url is required"
+            operation.updated_at = timezone.now()
+            operation.save()
+            results.append({"error": operation.error_message})
+            continue
 
-    model_ids = [m.get("id", "") for m in models_data.get("data", [])]
-    if model_name not in model_ids:
-        return _bad_request(f"model '{model_name}' not found in server response, available: {model_ids}")
+        if not base_url.rstrip("/").endswith("/v1"):
+            operation.status = "failed"
+            operation.error_message = "base_url must end with /v1"
+            operation.updated_at = timezone.now()
+            operation.save()
+            results.append({"error": operation.error_message, "base_url": base_url})
+            continue
 
-    model_obj, _ = Model.objects.get_or_create(model_name=model_name)
-    server = Server.objects.create(
-        model_id=model_obj.id,
-        base_url=base_url,
-    )
+        if not model_name:
+            operation.status = "failed"
+            operation.error_message = "model_name is required"
+            operation.updated_at = timezone.now()
+            operation.save()
+            results.append({"error": operation.error_message, "base_url": base_url})
+            continue
 
-    return JsonResponse({"code": 200, "data": {"id": server.id, "base_url": server.base_url, "model_name": model_name}})
+        if Server.objects.filter(base_url=base_url).exists():
+            operation.status = "failed"
+            operation.error_message = "base_url already exists"
+            operation.updated_at = timezone.now()
+            operation.save()
+            results.append({"error": operation.error_message, "base_url": base_url})
+            continue
+
+        # Verify server is reachable and serves the expected model
+        verify_url = base_url.rstrip("/") + "/models"
+        try:
+            resp = http_requests.get(verify_url, timeout=10)
+            resp.raise_for_status()
+            models_data = resp.json()
+            model_ids = [m.get("id", "") for m in models_data.get("data", [])]
+            if model_name not in model_ids:
+                raise ValueError(f"model '{model_name}' not found in server response, available: {model_ids}")
+        except Exception as e:
+            operation.status = "failed"
+            operation.error_message = f"failed to reach server at {verify_url}: {e}"
+            operation.updated_at = timezone.now()
+            operation.save()
+            results.append({"error": operation.error_message, "base_url": base_url})
+            continue
+
+        model_obj, _ = Model.objects.get_or_create(model_name=model_name)
+        server = Server.objects.create(
+            model_id=model_obj.id,
+            base_url=base_url,
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+
+        operation.server_id = server.id
+        operation.status = "success"
+        operation.response_data = {"id": server.id, "base_url": server.base_url, "model_name": model_name}
+        operation.updated_at = timezone.now()
+        operation.save()
+
+        results.append(operation.response_data)
+
+    if isinstance(payload, dict):
+        if "error" in results[0]:
+            return _bad_request(results[0]["error"])
+        return JsonResponse({"code": 200, "data": results[0]})
+    else:
+        return JsonResponse({"code": 200, "data": results})
 
 
 def _bad_request(message: str):

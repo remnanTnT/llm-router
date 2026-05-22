@@ -96,4 +96,32 @@ curl -i -X POST http://localhost:8001/api/refresh_user_info
 POST /api/add_server
 ```
 
-Registers a new upstream server. The endpoint verifies that the upstream `/models` advertises the requested `model_name` before persisting the row.
+Registers one or more new upstream servers. The endpoint verifies that the upstream `/models` advertises the requested `model_name` before persisting the row.
+
+Accepts either a single dictionary or a list of dictionaries.
+
+### Request Body (Single)
+
+```json
+{
+  "base_url": "http://10.1.2.3:8000/v1",
+  "model_name": "gpt-3.5-turbo"
+}
+```
+
+### Request Body (Multiple)
+
+```json
+[
+  {
+    "base_url": "http://10.1.2.3:8000/v1",
+    "model_name": "gpt-3.5-turbo"
+  },
+  {
+    "base_url": "http://10.1.2.4:8000/v1",
+    "model_name": "gpt-3.5-turbo"
+  }
+]
+```
+
+Note: Duplicate `base_url` within a single request is not allowed. All operations are logged to the `server_operations` table.
