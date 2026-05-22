@@ -38,6 +38,7 @@ def healthy(request):
 def proxy(request, path: str):
     user_agent = request.headers.get("User-Agent", "")
     client_ip = _client_ip(request)
+    is_vip_channel = _is_vip_channel(request)
     ip = None
     model = None
     parsed = None
@@ -80,7 +81,7 @@ def proxy(request, path: str):
             RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 429, "concurrent limit exceeded")
             return error_response(concurrency.status_code, concurrency.message or "concurrent limit exceeded", concurrency.error_type or "concurrent_limit_exceeded")
 
-        return ProxyService().forward(request, path, parsed, ip.id, model, user_agent)
+        return ProxyService().forward(request, path, parsed, ip.id, model, user_agent, is_vip_channel=is_vip_channel)
     except Exception as exc:
         model_id = model.id if model else 0
         ip_id = ip.id if ip else None
@@ -139,3 +140,17 @@ def _client_ip(request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR", "0.0.0.0")
+
+
+def _is_vip_channel(request) -> bool:
+    try:
+        vip_port = int(APP_CONFIG.get("server", {}).get("vip_port", 8008))
+    except (TypeError, ValueError):
+        return False
+    server_port = request.META.get("SERVER_PORT")
+    if server_port is None:
+        return False
+    try:
+        return int(server_port) == vip_port
+    except (TypeError, ValueError):
+        return False

@@ -32,6 +32,8 @@ CREATE TABLE servers (
     last_failure_at TIMESTAMPTZ NULL,
     cache_time INTEGER NOT NULL DEFAULT 3600,
     csb_token VARCHAR(500) NULL,
+    vip BOOLEAN NOT NULL DEFAULT FALSE,
+    vip_cooldown TIMESTAMPTZ NULL,
     created_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NULL,
     deleted_at TIMESTAMPTZ NULL
@@ -41,6 +43,16 @@ CREATE INDEX servers_online_model_idx
     ON servers (is_online, model_id)
     WHERE deleted_at IS NULL;
 ```
+
+`vip` and `vip_cooldown` are router-managed; do not edit them by hand. The router promotes and demotes servers automatically based on VIP request load.
+
+## `models` Table
+
+```sql
+ALTER TABLE models ADD COLUMN vip INTEGER NULL;
+```
+
+`vip` is admin-managed. Set it to a positive integer to enable VIP routing for that model: it is the per-active-VIP-server workload threshold above which the router promotes another normal server into the VIP pool. `NULL` or `0` disables VIP routing for the model — VIP-port traffic for it is served from the normal pool.
 
 ## Request-Table Indexes
 

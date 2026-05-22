@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.db.models import F, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
@@ -9,14 +11,22 @@ from router.models import Server
 
 class ServerRepository:
     @staticmethod
-    def list_by_model_id(model_id: int | None) -> list[Server]:
-        """Return routable servers: online + (closed or cooldown-expired open/half_open)."""
+    def list_by_model_id(model_id: int | None, vip: bool | None = None) -> list[Server]:
+        """Return routable servers: online + (closed or cooldown-expired open/half_open).
+
+        ``vip``: when ``True`` only VIP servers, when ``False`` only non-VIP servers,
+        when ``None`` (default) both.
+        """
         now = timezone.now()
         queryset = Server.objects.filter(deleted_at__isnull=True, is_online=True)
         if model_id:
             queryset = queryset.filter(model_id=model_id)
         else:
             queryset = queryset.filter(model_id__isnull=True)
+        if vip is True:
+            queryset = queryset.filter(vip=True)
+        elif vip is False:
+            queryset = queryset.filter(vip=False)
         servers = list(queryset.order_by("id"))
         return ServerRepository._filter_routable(servers, now)
 
@@ -133,3 +143,68 @@ class ServerRepository:
         server.circuit_state = "half_open"
         server.last_state_change_at = now
         server.updated_at = now
+
+    @staticmethod
+    def promote_to_vip(server: Server) -> bool:
+        """Atomically flip vip=False -> vip=True. Returns True if this caller did the flip."""
+        now = timezone.now()
+        updated = Server.objects.filter(id=server.id, vip=False).update(
+            vip=True,
+            vip_cooldown=None,
+            updated_at=now,
+        )
+        if updated:
+            server.vip = True
+            server.vip_cooldown = None
+            server.updated_at = now
+        return bool(updated)
+
+    @staticmethod
+    def demote_to_normal(server: Server) -> None:
+        now = timezone.now()
+        Server.objects.filter(id=server.id).update(
+            vip=False,
+            vip_cooldown=None,
+            updated_at=now,
+        )
+        server.vip = False
+        server.vip_cooldown = None
+        server.updated_at = now
+
+    @staticmethod
+    def mark_vip_cooldown(server: Server) -> bool:
+        """Idempotent: only sets vip_cooldown when currently NULL. Returns True if this caller set it."""
+        now = timezone.now()
+        updated = Server.objects.filter(
+            id=server.id, vip=True, vip_cooldown__isnull=True
+        ).update(vip_cooldown=now, updated_at=now)
+        if updated:
+            server.vip_cooldown = now
+            server.updated_at = now
+        return bool(updated)
+
+    @staticmethod
+    def cancel_vip_cooldown(server: Server) -> bool:
+        now = timezone.now()
+        updated = Server.objects.filter(
+            id=server.id, vip=True, vip_cooldown__isnull=False
+        ).update(vip_cooldown=None, updated_at=now)
+        if updated:
+            server.vip_cooldown = None
+            server.updated_at = now
+        return bool(updated)
+
+    @staticmethod
+    def demote_expired_cooldowns(cooldown_seconds: int, model_id: int | None = None) -> int:
+        """Demote any VIP servers whose cooldown started more than ``cooldown_seconds`` ago."""
+        now = timezone.now()
+        cutoff = now - timedelta(seconds=cooldown_seconds)
+        queryset = Server.objects.filter(
+            deleted_at__isnull=True,
+            vip=True,
+            vip_cooldown__isnull=False,
+            vip_cooldown__lte=cutoff,
+        )
+        if model_id is not None:
+            queryset = queryset.filter(model_id=model_id)
+        return queryset.update(vip=False, vip_cooldown=None, updated_at=now)

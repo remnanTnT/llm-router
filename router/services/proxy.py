@@ -18,6 +18,7 @@ from router.services.circuit_breaker import CircuitBreakerService
 from router.services.disconnect import DisconnectWatcher
 from router.services.opencode import OpencodeVersionService
 from router.services.request_logger import append_request_log, append_error_log
+from router.services.vip_channel import VIPChannelService
 from router.route_algorithm.base import ServerSelectionContext
 from router.route_algorithm.least_connection import LeastConnectionServerChooser
 from router.utils.errors import error_payload, timeout_sse_event
@@ -29,8 +30,6 @@ class ProxyService:
     def __init__(self, chooser=None):
         proxy_config = APP_CONFIG.get("proxy", {})
         lb_config = APP_CONFIG.get("load_balancer", {})
-        self.proxy_url = str(APP_CONFIG.get("proxy_url", "http://localhost:8051")).rstrip("/") + "/"
-        self.load_balancer_enabled = bool(lb_config.get("enabled", True))
         self.max_attempts_per_request = int(lb_config.get("max_attempts_per_request", 3))
         self.retry_status_codes = {int(code) for code in lb_config.get("retry_status_codes", [502, 503, 504])}
         self.mark_unhealthy_status_codes = {int(code) for code in lb_config.get("mark_unhealthy_status_codes", [502, 503, 504])}
@@ -47,11 +46,18 @@ class ProxyService:
         self.client_disconnect_check_interval = float(proxy_config.get("client_disconnect_check_interval_seconds", 0.5))
         self.opencode_failure_delay = float(proxy_config.get("opencode_failure_delay_seconds", 30))
         self.circuit_breaker = CircuitBreakerService()
+        self.vip_service = VIPChannelService()
+        self.vip_port = int(APP_CONFIG.get("server", {}).get("vip_port", 8008))
 
-    def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None):
-        record = RequestRepository.create_processing(ip_id, model.id if model else 0, parsed.stream, user_agent)
+    def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None, is_vip_channel: bool = False):
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
         model_id = model.id if model else None
+
+        candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel)
+        user_ip_id = 2 if served_as_vip else 1
+        record = RequestRepository.create_processing(
+            ip_id, model.id if model else 0, parsed.stream, user_agent, user_ip_id=user_ip_id
+        )
         context = ServerSelectionContext(
             request_id=record.id,
             ip_id=ip_id,
@@ -62,22 +68,18 @@ class ProxyService:
             is_stream=parsed.stream,
             body=parsed.body,
         )
-        if self.load_balancer_enabled:
-            candidates = self._candidates_for_request(path, model_id)
-            if not candidates:
-                RequestRepository.finish(record, 503, "Service Unavailable")
-                self._maybe_delay_opencode_failure(user_agent, 503)
-                return HttpResponse(
-                    json.dumps(error_payload("no online upstream server available", "service_unavailable")),
-                    status=503,
-                    content_type="application/json",
-                )
-        else:
-            candidates = [self._legacy_server()]
+        if not candidates:
+            RequestRepository.finish(record, 503, "Service Unavailable")
+            self._maybe_delay_opencode_failure(user_agent, 503)
+            return HttpResponse(
+                json.dumps(error_payload("no online upstream server available", "service_unavailable")),
+                status=503,
+                content_type="application/json",
+            )
 
         if parsed.stream:
-            return self._handle_stream(django_request, path, headers, parsed.body, record, parsed.model_name, user_agent, candidates, context)
-        return self._handle_normal(django_request, path, headers, parsed.body, record, parsed.model_name, user_agent, candidates, context)
+            return self._handle_stream(django_request, path, headers, parsed.body, record, parsed.model_name, user_agent, candidates, context, served_as_vip, model)
+        return self._handle_normal(django_request, path, headers, parsed.body, record, parsed.model_name, user_agent, candidates, context, served_as_vip, model)
 
     def _build_url(self, base_url: str, path: str, query_string: str) -> str:
         url = base_url.rstrip("/") + "/" + path
@@ -86,13 +88,25 @@ class ProxyService:
             url = f"{url}{separator}{query_string}"
         return url
 
-    def _candidates_for_request(self, path: str, model_id: int | None):
+    def _candidates_for_request(self, path: str, model_id: int | None, vip: bool | None = None):
         if path.rstrip("/") == "models" and model_id is None:
             candidates = ServerRepository.list_all_online()
             return [random.choice(candidates)] if candidates else []
-        return ServerRepository.list_by_model_id(model_id)
+        return ServerRepository.list_by_model_id(model_id, vip=vip)
 
-    def _handle_normal(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context):
+    def _select_candidates(self, path: str, model, is_vip_channel: bool):
+        model_id = model.id if model else None
+        if path.rstrip("/") == "models" and model_id is None:
+            return self._candidates_for_request(path, None), False
+        if is_vip_channel and self.vip_service.is_vip_eligible(model):
+            return self.vip_service.select_candidates(model)
+        return self._candidates_for_request(path, model_id, vip=False), False
+
+    def _after_finish(self, served_as_vip: bool, model) -> None:
+        if served_as_vip and model is not None:
+            self.vip_service.maybe_scale_down(model)
+
+    def _handle_normal(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context, served_as_vip, model):
         disconnect_event = threading.Event()
         stop_event = threading.Event()
         upstream_client = CancellableUpstreamRequest()
@@ -143,11 +157,11 @@ class ProxyService:
                         timeout=self.normal_timeout,
                     )
                     if disconnect_event.is_set():
-                        return self._client_closed_response(record)
+                        return self._client_closed_response(record, served_as_vip, model)
 
                     content = upstream.content
                     if disconnect_event.is_set():
-                        return self._client_closed_response(record)
+                        return self._client_closed_response(record, served_as_vip, model)
 
                     last_status = upstream.status_code
                     last_reason = upstream.reason or ""
@@ -175,6 +189,7 @@ class ProxyService:
                         final_model_id,
                         attempt_count=attempts,
                     )
+                    self._after_finish(served_as_vip, model)
                     if upstream.status_code >= 400:
                         self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, upstream.status_code, content)
                     response = HttpResponse(content, status=upstream.status_code)
@@ -183,7 +198,7 @@ class ProxyService:
                     return response
                 except requests.exceptions.ReadTimeout:
                     if disconnect_event.is_set():
-                        return self._client_closed_response(record)
+                        return self._client_closed_response(record, served_as_vip, model)
                     last_status = 504
                     last_reason = "Gateway Timeout"
                     self._mark_unhealthy(server)
@@ -191,7 +206,7 @@ class ProxyService:
                     break
                 except requests.RequestException as exc:
                     if disconnect_event.is_set():
-                        return self._client_closed_response(record)
+                        return self._client_closed_response(record, served_as_vip, model)
                     last_status = 502
                     last_reason = "Bad Gateway"
                     retry = attempts < min(self.max_attempts_per_request, len(candidates))
@@ -205,6 +220,7 @@ class ProxyService:
 
             self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
             RequestRepository.finish(record, last_status, last_reason, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
+            self._after_finish(served_as_vip, model)
             status = 504 if last_status == 504 else 502
             message = "request timeout, please try again later" if status == 504 else "502 Bad Gateway"
             error_type = "gateway_timeout_error" if status == 504 else "server_error"
@@ -216,7 +232,7 @@ class ProxyService:
             if watcher:
                 watcher.join(timeout=0.1)
 
-    def _handle_stream(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context):
+    def _handle_stream(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context, served_as_vip, model):
         attempted_server_ids: set[int] = set()
         attempts = 0
         last_server = None
@@ -274,6 +290,7 @@ class ProxyService:
                     fail_reason = self._extract_fail_reason(content, reason)
                     final_model_id = self._ensure_model_after_success(model_name, status_code)
                     RequestRepository.finish(record, status_code, fail_reason, 0, 0, target_pod_ip, final_model_id, attempt_count=attempts)
+                    self._after_finish(served_as_vip, model)
                     self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, status_code, content)
                     response = HttpResponse(content, status=status_code)
                     for key, value in filter_response_headers(dict(upstream.headers)).items():
@@ -281,7 +298,7 @@ class ProxyService:
                     return response
 
                 workload_handed_off = True
-                return self._stream_success(django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context)
+                return self._stream_success(django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model)
             except requests.exceptions.ReadTimeout:
                 last_status = 504
                 last_reason = "Gateway Timeout"
@@ -303,13 +320,14 @@ class ProxyService:
 
         self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
         RequestRepository.finish(record, last_status, last_reason, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
+        self._after_finish(served_as_vip, model)
         status = 504 if last_status == 504 else 502
         message = "request timeout, please try again later" if status == 504 else "502 Bad Gateway"
         error_type = "gateway_timeout_error" if status == 504 else "server_error"
         self._maybe_delay_opencode_failure(user_agent, status)
         return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
 
-    def _stream_success(self, django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context):
+    def _stream_success(self, django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model):
         def generate():
             chunks: list[bytes] = []
             try:
@@ -342,15 +360,16 @@ class ProxyService:
             finally:
                 upstream.close()
                 self._decrement_workload(server)
+                self._after_finish(served_as_vip, model)
 
         response = StreamingHttpResponse(generate(), status=200, content_type="text/event-stream")
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"
         return response
 
-    @staticmethod
-    def _client_closed_response(record):
+    def _client_closed_response(self, record, served_as_vip: bool = False, model=None):
         RequestRepository.finish(record, 499, "Client Closed Request", task_status="agent_disconnected")
+        self._after_finish(served_as_vip, model)
         return HttpResponse(status=499)
 
     def _maybe_delay_opencode_failure(self, user_agent: str | None, status_code: int) -> None:
@@ -399,17 +418,8 @@ class ProxyService:
         except (ImportError, AttributeError, ValueError, TypeError):
             return LeastConnectionServerChooser()
 
-    @staticmethod
-    def _legacy_server():
-        class LegacyServer:
-            id = 0
-            model_id = None
-            base_url = str(APP_CONFIG.get("proxy_url", "http://localhost:8051"))
-
-        return LegacyServer()
-
     def _notify_chooser_response(self, server, context, status_code: int) -> None:
-        if 200 <= status_code < 300 and server.id != 0:
+        if 200 <= status_code < 300:
             self.circuit_breaker.record_success(server)
         hook = getattr(self.chooser, "on_response", None)
         if not hook:

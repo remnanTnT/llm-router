@@ -50,6 +50,7 @@ class Model(models.Model):
     model_name = models.CharField(max_length=100, unique=True)
     concurrent_limit = models.IntegerField(blank=True, null=True, default=3)
     max_tokens = models.IntegerField(default=20480)
+    vip = models.IntegerField(blank=True, null=True)
 
     class Meta:
         managed = False
@@ -71,6 +72,8 @@ class Server(TimestampedSoftDeleteModel):
     last_state_change_at = models.DateTimeField(blank=True, null=True)
     cooldown_seconds = models.IntegerField(default=30)
     workload = models.IntegerField(default=0)
+    vip = models.BooleanField(default=False)
+    vip_cooldown = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         managed = False

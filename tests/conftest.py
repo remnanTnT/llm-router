@@ -26,6 +26,12 @@ def api_test_tables():
         for col in ("circuit_state", "consecutive_failures", "last_state_change_at", "cooldown_seconds", "workload"):
             if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", col):
                 schema_editor.add_field(Server, Server._meta.get_field(col))
+        # VIP columns
+        for col in ("vip", "vip_cooldown"):
+            if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", col):
+                schema_editor.add_field(Server, Server._meta.get_field(col))
+        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "vip"):
+            schema_editor.add_field(Model, Model._meta.get_field("vip"))
     yield
 
 
