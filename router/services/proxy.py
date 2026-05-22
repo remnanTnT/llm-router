@@ -78,9 +78,10 @@ class ProxyService:
                 content_type="application/json",
             )
 
-        if parsed.stream:
-            return self._handle_stream(django_request, path, headers, parsed.body, record, parsed.model_name, user_agent, candidates, context, served_as_vip, model)
-        return self._handle_normal(django_request, path, headers, parsed.body, record, parsed.model_name, user_agent, candidates, context, served_as_vip, model)
+        return self._route_with_retry(
+            django_request, path, headers, parsed.body, record, parsed.model_name,
+            user_agent, candidates, context, served_as_vip, model, parsed.stream
+        )
 
     def _build_url(self, base_url: str, path: str, query_string: str) -> str:
         url = base_url.rstrip("/") + "/" + path
@@ -107,21 +108,24 @@ class ProxyService:
         if served_as_vip and model is not None:
             self.vip_service.maybe_scale_down(model)
 
-    def _handle_normal(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context, served_as_vip, model):
+    def _route_with_retry(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context, served_as_vip, model, is_stream):
         disconnect_event = threading.Event()
         stop_event = threading.Event()
-        upstream_client = CancellableUpstreamRequest()
+        upstream_client = None
         watcher = None
-        tracker = getattr(django_request, "client_disconnect_tracker", None)
-        if tracker:
-            watcher = DisconnectWatcher(
-                tracker,
-                disconnect_event,
-                stop_event,
-                upstream_client.cancel,
-                self.client_disconnect_check_interval,
-            )
-            watcher.start()
+
+        if not is_stream:
+            upstream_client = CancellableUpstreamRequest()
+            tracker = getattr(django_request, "client_disconnect_tracker", None)
+            if tracker:
+                watcher = DisconnectWatcher(
+                    tracker,
+                    disconnect_event,
+                    stop_event,
+                    upstream_client.cancel,
+                    self.client_disconnect_check_interval,
+                )
+                watcher.start()
 
         attempted_server_ids: set[int] = set()
         attempts = 0
@@ -138,6 +142,7 @@ class ProxyService:
                 attempts += 1
                 upstream_url = self._build_url(server.base_url, path, django_request.META.get("QUERY_STRING", ""))
                 target_pod_ip = self._target_identifier(server)
+                
                 RequestRepository.record_attempt(
                     record,
                     target_pod_ip,
@@ -146,57 +151,78 @@ class ProxyService:
                     getattr(context, "last_match", None),
                 )
                 self._increment_workload(server)
+                workload_handed_off = False
                 try:
-                    req_headers = {**headers}
-                    if server.csb_token:
-                        req_headers["csb-token"] = server.csb_token
-                    upstream = upstream_client.request(
-                        django_request.method,
-                        upstream_url,
-                        headers=req_headers,
-                        data=body if django_request.method.upper() not in {"GET", "HEAD"} else None,
-                        timeout=self.normal_timeout,
-                    )
+                    if is_stream:
+                        upstream = self._handle_stream(django_request, server, upstream_url, headers, body)
+                    else:
+                        upstream = self._handle_normal(django_request, server, upstream_url, headers, body, upstream_client)
+
                     if disconnect_event.is_set():
                         return self._client_closed_response(record, served_as_vip, model)
 
-                    content = upstream.content
-                    if disconnect_event.is_set():
-                        return self._client_closed_response(record, served_as_vip, model)
+                    if not is_stream:
+                        content = upstream.content
+                        if disconnect_event.is_set():
+                            return self._client_closed_response(record, served_as_vip, model)
 
-                    last_status = upstream.status_code
-                    last_reason = upstream.reason or ""
-                    retry = upstream.status_code in self.retry_status_codes and attempts < min(self.max_attempts_per_request, len(candidates))
-                    self._log_attempt(record.id, attempts, server, "status", retry, status=upstream.status_code)
-                    if upstream.status_code in self.mark_unhealthy_status_codes:
+                    status_code = upstream.status_code
+                    reason = upstream.reason or ""
+                    last_status = status_code
+                    last_reason = reason
+                    
+                    retry = status_code in self.retry_status_codes and attempts < min(self.max_attempts_per_request, len(candidates))
+                    self._log_attempt(record.id, attempts, server, "status", retry, status=status_code)
+                    
+                    if status_code in self.mark_unhealthy_status_codes:
                         self._mark_unhealthy(server)
+                        
                     if retry:
                         upstream.close()
                         continue
 
                     self._maybe_log_multi_server_route(record.id, attempted_server_ids, server.id)
-                    self._maybe_delay_opencode_failure(user_agent, upstream.status_code)
-                    self._notify_chooser_response(server, context, upstream.status_code)
-                    input_tokens, output_tokens = self._parse_json_usage(content)
-                    fail_reason = self._extract_fail_reason(content, upstream.reason or "")
-                    final_model_id = self._ensure_model_after_success(model_name, upstream.status_code)
-                    RequestRepository.finish(
-                        record,
-                        upstream.status_code,
-                        fail_reason,
-                        input_tokens,
-                        output_tokens,
-                        target_pod_ip,
-                        final_model_id,
-                        attempt_count=attempts,
-                    )
-                    self._after_finish(served_as_vip, model)
-                    if upstream.status_code >= 400:
-                        self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, upstream.status_code, content)
-                    response = HttpResponse(content, status=upstream.status_code)
-                    for key, value in filter_response_headers(dict(upstream.headers)).items():
-                        response[key] = value
-                    return response
+                    self._maybe_delay_opencode_failure(user_agent, status_code)
+                    
+                    if not is_stream or status_code >= 400:
+                        if is_stream:
+                            content = upstream.content
+                            upstream.close()
+                            
+                        self._notify_chooser_response(server, context, status_code)
+                        
+                        if is_stream:
+                            fail_reason = self._extract_fail_reason(content, reason)
+                            final_model_id = self._ensure_model_after_success(model_name, status_code)
+                            RequestRepository.finish(record, status_code, fail_reason, 0, 0, target_pod_ip, final_model_id, attempt_count=attempts)
+                        else:
+                            input_tokens, output_tokens = self._parse_json_usage(content)
+                            fail_reason = self._extract_fail_reason(content, reason)
+                            final_model_id = self._ensure_model_after_success(model_name, status_code)
+                            RequestRepository.finish(
+                                record,
+                                status_code,
+                                fail_reason,
+                                input_tokens,
+                                output_tokens,
+                                target_pod_ip,
+                                final_model_id,
+                                attempt_count=attempts,
+                            )
+                        
+                        self._after_finish(served_as_vip, model)
+                        
+                        if status_code >= 400:
+                            self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, status_code, content)
+                            
+                        response = HttpResponse(content, status=status_code)
+                        for key, value in filter_response_headers(dict(upstream.headers)).items():
+                            response[key] = value
+                        return response
+                    else:
+                        workload_handed_off = True
+                        return self._stream_success(django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model)
+
                 except requests.exceptions.ReadTimeout:
                     if disconnect_event.is_set():
                         return self._client_closed_response(record, served_as_vip, model)
@@ -217,7 +243,8 @@ class ProxyService:
                         continue
                     break
                 finally:
-                    self._decrement_workload(server)
+                    if not workload_handed_off:
+                        self._decrement_workload(server)
 
             self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
             status = 504 if last_status == 504 else 502
@@ -229,104 +256,35 @@ class ProxyService:
             return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
         finally:
             stop_event.set()
-            upstream_client.close()
+            if upstream_client:
+                upstream_client.close()
             if watcher:
                 watcher.join(timeout=0.1)
 
-    def _handle_stream(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context, served_as_vip, model):
-        attempted_server_ids: set[int] = set()
-        attempts = 0
-        last_server = None
-        last_status = 502
-        last_reason = "Bad Gateway"
+    def _handle_normal(self, django_request, server, upstream_url, headers, body, upstream_client):
+        req_headers = {**headers}
+        if server.csb_token:
+            req_headers["csb-token"] = server.csb_token
+        return upstream_client.request(
+            django_request.method,
+            upstream_url,
+            headers=req_headers,
+            data=body if django_request.method.upper() not in {"GET", "HEAD"} else None,
+            timeout=self.normal_timeout,
+        )
 
-        while attempts < min(self.max_attempts_per_request, len(candidates)):
-            server = self.chooser.choose(candidates, context, attempted_server_ids)
-            if server is None:
-                break
-            last_server = server
-            attempted_server_ids.add(server.id)
-            attempts += 1
-            upstream_url = self._build_url(server.base_url, path, django_request.META.get("QUERY_STRING", ""))
-            target_pod_ip = self._target_identifier(server)
-            RequestRepository.record_attempt(
-                record,
-                target_pod_ip,
-                attempts,
-                getattr(context, "prefix_cache", None),
-                getattr(context, "last_match", None),
-            )
-            self._increment_workload(server)
-            workload_handed_off = False
-            try:
-                req_headers = {**headers}
-                if server.csb_token:
-                    req_headers["csb-token"] = server.csb_token
-                upstream = requests.request(
-                    django_request.method,
-                    upstream_url,
-                    headers=req_headers,
-                    data=body,
-                    stream=True,
-                    timeout=self.stream_timeout,
-                )
-                status_code = upstream.status_code
-                reason = upstream.reason or ""
-                last_status = status_code
-                last_reason = reason
-                retry = status_code in self.retry_status_codes and attempts < min(self.max_attempts_per_request, len(candidates))
-                self._log_attempt(record.id, attempts, server, "status", retry, status=status_code)
-                if status_code in self.mark_unhealthy_status_codes:
-                    self._mark_unhealthy(server)
-                if retry:
-                    upstream.close()
-                    continue
-
-                self._maybe_log_multi_server_route(record.id, attempted_server_ids, server.id)
-                self._maybe_delay_opencode_failure(user_agent, status_code)
-
-                if status_code >= 400:
-                    content = upstream.content
-                    upstream.close()
-                    fail_reason = self._extract_fail_reason(content, reason)
-                    final_model_id = self._ensure_model_after_success(model_name, status_code)
-                    RequestRepository.finish(record, status_code, fail_reason, 0, 0, target_pod_ip, final_model_id, attempt_count=attempts)
-                    self._after_finish(served_as_vip, model)
-                    self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, status_code, content)
-                    response = HttpResponse(content, status=status_code)
-                    for key, value in filter_response_headers(dict(upstream.headers)).items():
-                        response[key] = value
-                    return response
-
-                workload_handed_off = True
-                return self._stream_success(django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model)
-            except requests.exceptions.ReadTimeout:
-                last_status = 504
-                last_reason = "Gateway Timeout"
-                self._mark_unhealthy(server)
-                self._log_attempt(record.id, attempts, server, "read_timeout", False, reason="ReadTimeout")
-                break
-            except requests.RequestException as exc:
-                last_status = 502
-                last_reason = "Bad Gateway"
-                retry = attempts < min(self.max_attempts_per_request, len(candidates))
-                self._mark_unhealthy(server)
-                self._log_attempt(record.id, attempts, server, exc.__class__.__name__, retry, reason=str(exc))
-                if retry:
-                    continue
-                break
-            finally:
-                if not workload_handed_off:
-                    self._decrement_workload(server)
-
-        self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
-        status = 504 if last_status == 504 else 502
-        message = "request timeout, please try again later" if status == 504 else "502 Bad Gateway"
-        RequestRepository.finish(record, status, message, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
-        self._after_finish(served_as_vip, model)
-        error_type = "gateway_timeout_error" if status == 504 else "server_error"
-        self._maybe_delay_opencode_failure(user_agent, status)
-        return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
+    def _handle_stream(self, django_request, server, upstream_url, headers, body):
+        req_headers = {**headers}
+        if server.csb_token:
+            req_headers["csb-token"] = server.csb_token
+        return requests.request(
+            django_request.method,
+            upstream_url,
+            headers=req_headers,
+            data=body,
+            stream=True,
+            timeout=self.stream_timeout,
+        )
 
     def _stream_success(self, django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model):
         def generate():
