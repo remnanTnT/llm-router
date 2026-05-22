@@ -43,7 +43,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "prefix_cache": {
         "primary_match_threshold": 0.9,
         "secondary_match_threshold": 0.5,
-        "max_prefix_tokens": 100000,
+        "max_prefix_tokens": 200000,
     },
     "opencode": {
         "enabled": True,
