@@ -69,10 +69,11 @@ class ProxyService:
             body=parsed.body,
         )
         if not candidates:
-            RequestRepository.finish(record, 503, "Service Unavailable")
+            message = "no online upstream server available"
+            RequestRepository.finish(record, 503, message)
             self._maybe_delay_opencode_failure(user_agent, 503)
             return HttpResponse(
-                json.dumps(error_payload("no online upstream server available", "service_unavailable")),
+                json.dumps(error_payload(message, "service_unavailable")),
                 status=503,
                 content_type="application/json",
             )
@@ -219,10 +220,10 @@ class ProxyService:
                     self._decrement_workload(server)
 
             self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
-            RequestRepository.finish(record, last_status, last_reason, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
-            self._after_finish(served_as_vip, model)
             status = 504 if last_status == 504 else 502
             message = "request timeout, please try again later" if status == 504 else "502 Bad Gateway"
+            RequestRepository.finish(record, status, message, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
+            self._after_finish(served_as_vip, model)
             error_type = "gateway_timeout_error" if status == 504 else "server_error"
             self._maybe_delay_opencode_failure(user_agent, status)
             return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
@@ -319,10 +320,10 @@ class ProxyService:
                     self._decrement_workload(server)
 
         self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
-        RequestRepository.finish(record, last_status, last_reason, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
-        self._after_finish(served_as_vip, model)
         status = 504 if last_status == 504 else 502
         message = "request timeout, please try again later" if status == 504 else "502 Bad Gateway"
+        RequestRepository.finish(record, status, message, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
+        self._after_finish(served_as_vip, model)
         error_type = "gateway_timeout_error" if status == 504 else "server_error"
         self._maybe_delay_opencode_failure(user_agent, status)
         return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
@@ -335,7 +336,7 @@ class ProxyService:
                 for chunk in upstream.iter_content(chunk_size=8192):
                     if time.monotonic() > deadline:
                         yield timeout_sse_event()
-                        RequestRepository.finish(record, 504, "Gateway Timeout", target_pod_ip=target_pod_ip, attempt_count=attempts)
+                        RequestRepository.finish(record, 504, "request timeout, please try again later", target_pod_ip=target_pod_ip, attempt_count=attempts)
                         return
                     tracker = getattr(django_request, "client_disconnect_tracker", None)
                     if tracker and tracker.client_disconnected():
@@ -351,12 +352,13 @@ class ProxyService:
             except requests.exceptions.ReadTimeout:
                 yield timeout_sse_event()
                 self._mark_unhealthy(server)
-                RequestRepository.finish(record, 504, "Gateway Timeout", target_pod_ip=target_pod_ip, attempt_count=attempts)
+                RequestRepository.finish(record, 504, "request timeout, please try again later", target_pod_ip=target_pod_ip, attempt_count=attempts)
             except requests.RequestException:
-                payload = error_payload("502 Bad Gateway", "server_error")
+                message = "502 Bad Gateway"
+                payload = error_payload(message, "server_error")
                 yield f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n".encode("utf-8")
                 self._mark_unhealthy(server)
-                RequestRepository.finish(record, 502, "Bad Gateway", target_pod_ip=target_pod_ip, attempt_count=attempts)
+                RequestRepository.finish(record, 502, message, target_pod_ip=target_pod_ip, attempt_count=attempts)
             finally:
                 upstream.close()
                 self._decrement_workload(server)

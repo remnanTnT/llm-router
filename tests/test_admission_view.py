@@ -21,6 +21,29 @@ def test_deprecated_model_returns_400():
     data = response.json()
     assert data["error"]["message"] == "This model is deprecated. Please use model-v2."
     assert data["error"]["type"] == "invalid_request_error"
+    
+    # Verify fail_reason in DB matches
+    from router.models import RequestRecord
+    record = RequestRecord.objects.last()
+    assert record.fail_reason == data["error"]["message"]
+
+@pytest.mark.django_db
+def test_max_tokens_fail_reason_matches():
+    Model.objects.create(model_name="expensive-model", max_tokens=10)
+    
+    client = Client()
+    response = client.post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "expensive-model", "max_tokens": 100}),
+        content_type="application/json"
+    )
+    
+    assert response.status_code == 400
+    data = response.json()
+    from router.models import RequestRecord
+    record = RequestRecord.objects.last()
+    assert record.fail_reason == data["error"]["message"]
+    assert "too many tokens" in record.fail_reason
 
 @pytest.mark.django_db
 def test_normal_model_not_blocked_by_deprecation():
