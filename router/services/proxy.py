@@ -31,8 +31,6 @@ class ProxyService:
         proxy_config = APP_CONFIG.get("proxy", {})
         lb_config = APP_CONFIG.get("load_balancer", {})
         self.max_attempts_per_request = int(lb_config.get("max_attempts_per_request", 3))
-        self.retry_status_codes = {int(code) for code in lb_config.get("retry_status_codes", [502, 503, 504])}
-        self.mark_unhealthy_status_codes = {int(code) for code in lb_config.get("mark_unhealthy_status_codes", [502, 503, 504])}
         self.chooser = chooser or self._load_chooser(str(lb_config.get("chooser_class", "router.route_algorithm.least_connection.LeastConnectionServerChooser")))
         self.stream_timeout = (
             float(proxy_config.get("stream_connect_timeout_seconds", 30)),
@@ -171,15 +169,13 @@ class ProxyService:
                     last_status = status_code
                     last_reason = reason
                     
-                    retry = status_code in self.retry_status_codes and attempts < min(self.max_attempts_per_request, len(candidates))
+                    # We no longer retry based on HTTP status codes.
+                    retry = False
                     self._log_attempt(record.id, attempts, server, "status", retry, status=status_code)
                     
-                    if status_code in self.mark_unhealthy_status_codes:
+                    # Mark unhealthy if server returns >= 500 (but skip for 504 timeouts)
+                    if status_code >= 500 and status_code != 504:
                         self._mark_unhealthy(server)
-                        
-                    if retry:
-                        upstream.close()
-                        continue
 
                     self._maybe_log_multi_server_route(record.id, attempted_server_ids, server.id)
                     self._maybe_delay_opencode_failure(user_agent, status_code)
@@ -228,7 +224,6 @@ class ProxyService:
                         return self._client_closed_response(record, served_as_vip, model)
                     last_status = 504
                     last_reason = "Gateway Timeout"
-                    self._mark_unhealthy(server)
                     self._log_attempt(record.id, attempts, server, "read_timeout", False, reason="ReadTimeout")
                     break
                 except requests.RequestException as exc:
@@ -309,7 +304,6 @@ class ProxyService:
                 RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, final_model_id, attempt_count=attempts)
             except requests.exceptions.ReadTimeout:
                 yield timeout_sse_event()
-                self._mark_unhealthy(server)
                 RequestRepository.finish(record, 504, "request timeout, please try again later", target_pod_ip=target_pod_ip, attempt_count=attempts)
             except requests.RequestException:
                 message = "502 Bad Gateway"
