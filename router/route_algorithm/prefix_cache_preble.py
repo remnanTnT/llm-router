@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import random
+import sys
 import threading
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta
 from typing import Any, Callable, Sequence
 
 from django.utils import timezone
@@ -17,9 +19,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class TrieNode:
+    """Memory-efficient Trie node for prefix matching.
+    
+    Using __slots__ to minimize memory overhead per node.
+    """
+    __slots__ = ("children", "server_cached_at", "request_id")
+
+    def __init__(self):
+        # token -> TrieNode
+        self.children: dict[str, TrieNode] = {}
+        # server_id -> (cached_at_timestamp, cache_time_seconds)
+        self.server_cached_at: dict[int, tuple[datetime, int]] = {}
+        # Most recent request_id that passed through or ended at this node
+        self.request_id: int | None = None
+
+
 class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
     _cache_lock = threading.RLock()
-    _prefix_cache: dict[str, list[dict[str, Any]]] = {}
+    # model_key -> root TrieNode
+    _prefix_cache: dict[str, TrieNode] = {}
 
     def __init__(
         self,
@@ -52,39 +71,40 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             return self._choose_least_loaded(available)
 
         model_key = context.model_name or str(context.model_id or "")
-        candidates_by_id = {server.id: server for server in candidates}
         available_by_id = {server.id: server for server in available}
         now = timezone.now()
+        
         cached_matches = []
         best_match_ratio = 0.0
         best_match_request_id = None
         server_match_ratios: dict[int, float] = {}
 
         with self._cache_lock:
-            entries = self._prefix_cache.get(model_key, [])
-            live_entries = []
-            for entry in entries:
-                self._evict_expired(entry, candidates_by_id, now)
-                if not entry["server_cached_at"]:
-                    continue
-                live_entries.append(entry)
-                common = self._common_prefix_len(request_tokens, entry["tokens"])
-                if not common:
-                    continue
-                match_ratio = common / len(request_tokens)
-                if match_ratio > best_match_ratio:
-                    best_match_ratio = match_ratio
-                    best_match_request_id = entry.get("request_id")
-                for server_id in entry["server_cached_at"]:
-                    if match_ratio > server_match_ratios.get(server_id, 0.0):
-                        server_match_ratios[server_id] = match_ratio
-                if match_ratio > self.primary_match_threshold:
-                    for server_id in entry["server_cached_at"]:
-                        server = available_by_id.get(server_id)
-                        if server is not None:
-                            cached_matches.append(server)
-            if len(live_entries) != len(entries):
-                self._prefix_cache[model_key] = live_entries
+            root = self._prefix_cache.get(model_key)
+            if root:
+                node = root
+                for i, token in enumerate(request_tokens):
+                    if token not in node.children:
+                        break
+                    node = node.children[token]
+                    match_ratio = (i + 1) / len(request_tokens)
+                    
+                    # Clean up expired entries on the path we walk
+                    self._evict_expired_from_node(node, now)
+                    
+                    if node.server_cached_at:
+                        if match_ratio > best_match_ratio:
+                            best_match_ratio = match_ratio
+                            best_match_request_id = node.request_id
+                        
+                        for server_id in node.server_cached_at:
+                            if match_ratio > server_match_ratios.get(server_id, 0.0):
+                                server_match_ratios[server_id] = match_ratio
+                            
+                            if match_ratio > self.primary_match_threshold:
+                                server = available_by_id.get(server_id)
+                                if server:
+                                    cached_matches.append(server)
 
         logger.info(
             "[PrefixCachePreble] match_ratio per server (model=%s, best=%.4f):",
@@ -137,35 +157,33 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
 
         model_key = context.model_name or str(context.model_id or "")
         now = timezone.now()
-        with self._cache_lock:
-            entries = self._prefix_cache.setdefault(model_key, [])
-            for entry in entries:
-                if entry["tokens"] == request_tokens:
-                    entry["server_cached_at"][server.id] = now
-                    entry["request_id"] = context.request_id
-                    return
-            entries.append({"tokens": request_tokens, "request_id": context.request_id, "server_cached_at": {server.id: now}})
+        raw_cache_time = getattr(server, "cache_time", 3600)
+        cache_time = 3600 if raw_cache_time is None else int(raw_cache_time)
 
-    def _evict_expired(self, entry: dict[str, Any], servers_by_id: dict[int, Any], now) -> None:
+        with self._cache_lock:
+            node = self._prefix_cache.setdefault(model_key, TrieNode())
+            for token in request_tokens:
+                if token not in node.children:
+                    node.children[token] = TrieNode()
+                node = node.children[token]
+                node.server_cached_at[server.id] = (now, cache_time)
+                node.request_id = context.request_id
+
+    def _evict_expired_from_node(self, node: TrieNode, now: datetime) -> None:
         expired = []
-        for server_id, cached_at in entry["server_cached_at"].items():
-            server = servers_by_id.get(server_id)
-            if server is None:
-                expired.append(server_id)
-                continue
-            raw_cache_time = getattr(server, "cache_time", 3600)
-            cache_time = 3600 if raw_cache_time is None else int(raw_cache_time)
+        for server_id, (cached_at, cache_time) in node.server_cached_at.items():
             if now - cached_at > timedelta(seconds=cache_time):
                 expired.append(server_id)
         for server_id in expired:
-            del entry["server_cached_at"][server_id]
+            del node.server_cached_at[server_id]
 
     def _tokens_from_body(self, body: bytes) -> tuple[str, ...]:
         text = self._text_from_body(body)
         tokens = text.split()
         if not tokens and text:
             tokens = list(text)
-        return tuple(tokens[: self.max_prefix_tokens])
+        # Use sys.intern to share memory for common tokens across all requests
+        return tuple(sys.intern(t) for t in tokens[: self.max_prefix_tokens])
 
     @staticmethod
     def _text_from_body(body: bytes) -> str:
@@ -215,15 +233,6 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         return ""
 
     @staticmethod
-    def _common_prefix_len(left: tuple[str, ...], right: tuple[str, ...]) -> int:
-        count = 0
-        for left_token, right_token in zip(left, right):
-            if left_token != right_token:
-                break
-            count += 1
-        return count
-
-    @staticmethod
     def _float_setting(*values) -> float:
         default = float(values[-1])
         for value in values[:-1]:
@@ -246,3 +255,26 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             except (TypeError, ValueError):
                 continue
         return default
+
+    @classmethod
+    def _prune_node(cls, node: TrieNode, now: datetime) -> bool:
+        """Recursively removes expired servers and dead branches from the Trie.
+        
+        Returns True if the node itself should be pruned (no children and no server cache).
+        """
+        # 1. Evict expired servers from this node
+        expired = []
+        for server_id, (cached_at, cache_time) in node.server_cached_at.items():
+            if now - cached_at > timedelta(seconds=cache_time):
+                expired.append(server_id)
+        for server_id in expired:
+            del node.server_cached_at[server_id]
+
+        # 2. Recursively prune children
+        for token in list(node.children.keys()):
+            should_prune_child = cls._prune_node(node.children[token], now)
+            if should_prune_child:
+                del node.children[token]
+
+        # 3. Node can be pruned if it has no children and no active server cache
+        return not node.children and not node.server_cached_at

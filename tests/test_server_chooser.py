@@ -163,3 +163,61 @@ def test_prefix_cache_uses_renamed_threshold_arguments():
 
     assert chooser.primary_match_threshold == 0.91
     assert chooser.secondary_match_threshold == 0.41
+
+
+def test_prefix_cache_preble_specific_cleanup():
+    """Specific test for PrefixCachePreble to ensure Trie pruning logic works."""
+    chooser = PrefixCachePrebleServerChooser(count_provider=lambda targets: {t: 0 for t in targets})
+    PrefixCachePrebleServerChooser._prefix_cache = {}
+
+    server = make_server(1, "http://server1", cache_time=1)
+    candidates = [server]
+    model_name = "prune-test-model"
+
+    # Add entries and wait for expiration
+    for i in range(10):
+        body = json.dumps({"prompt": f"token_{i}"}).encode("utf-8")
+        ctx = make_context(body=body, request_id=i)
+        ctx.model_name = model_name
+        chooser.on_response(server, ctx, 200)
+
+    import time
+    time.sleep(1.1)
+
+    root = PrefixCachePrebleServerChooser._prefix_cache.get(model_name)
+    from django.utils import timezone
+    PrefixCachePrebleServerChooser._prune_node(root, timezone.now())
+
+    if not root.children and not root.server_cached_at:
+        del PrefixCachePrebleServerChooser._prefix_cache[model_name]
+
+    assert model_name not in PrefixCachePrebleServerChooser._prefix_cache
+
+
+@pytest.mark.parametrize("chooser_class", [
+    cls for name, cls in vars(__import__("router.route_algorithm", fromlist=["*"])).items()
+    if isinstance(cls, type) and name.endswith("ServerChooser") and name != "ServerChooser"
+])
+def test_all_choosers_memory_growth(chooser_class):
+    """Generic test to ensure NO chooser implementation grows its internal state 
+    unexpectedly during repeated choose() calls.
+    """
+    # Initialize with mock provider to avoid DB
+    try:
+        chooser = chooser_class(count_provider=lambda targets: {t: 0 for t in targets})
+    except TypeError:
+        # Fallback for choosers that might not take count_provider in __init__
+        chooser = chooser_class()
+
+    candidates = [make_server(1, "http://server1")]
+    context = make_context()
+    
+    # We measure the size of the instance dictionary to detect per-instance leaks.
+    # Note: This doesn't catch class-level leaks (like the prefix cache), 
+    # which should have their own specialized tests.
+    initial_state_size = len(chooser.__dict__)
+    
+    for i in range(100):
+        chooser.choose(candidates, context, set())
+        
+    assert len(chooser.__dict__) <= initial_state_size, f"{chooser_class.__name__} instance state grew!"
