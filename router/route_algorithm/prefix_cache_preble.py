@@ -32,8 +32,8 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         prefix_config = APP_CONFIG.get("prefix_cache", {})
         self.primary_match_threshold = self._float_setting(primary_match_threshold, prefix_config.get("primary_match_threshold"), 0.9)
         self.secondary_match_threshold = self._float_setting(secondary_match_threshold, prefix_config.get("secondary_match_threshold"), 0.5)
-        configured_max_prefix_tokens = self._int_setting(max_prefix_tokens, prefix_config.get("max_prefix_tokens"), 100000)
-        self.max_prefix_tokens = max(100000, configured_max_prefix_tokens)
+        configured_max_prefix_tokens = self._int_setting(max_prefix_tokens, prefix_config.get("max_prefix_tokens"), 200000)
+        self.max_prefix_tokens = max(200000, configured_max_prefix_tokens)
 
     def choose(
         self,
@@ -62,10 +62,12 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
 
         with self._cache_lock:
             entries = self._prefix_cache.get(model_key, [])
+            live_entries = []
             for entry in entries:
                 self._evict_expired(entry, candidates_by_id, now)
                 if not entry["server_cached_at"]:
                     continue
+                live_entries.append(entry)
                 common = self._common_prefix_len(request_tokens, entry["tokens"])
                 if not common:
                     continue
@@ -81,6 +83,8 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
                         server = available_by_id.get(server_id)
                         if server is not None:
                             cached_matches.append(server)
+            if len(live_entries) != len(entries):
+                self._prefix_cache[model_key] = live_entries
 
         logger.info(
             "[PrefixCachePreble] match_ratio per server (model=%s, best=%.4f):",
