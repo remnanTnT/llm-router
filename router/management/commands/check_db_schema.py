@@ -79,6 +79,15 @@ class Command(BaseCommand):
                         with connection.schema_editor() as schema_editor:
                             schema_editor.execute(sql)
 
+            for table, indexes in drift["missing_indexes"].items():
+                model = {m._meta.db_table: m for m in models}[table]
+                for index in indexes:
+                    with connection.schema_editor() as schema_editor:
+                        sql = str(index.create_sql(model, schema_editor))
+                        self.stdout.write(sql)
+                        if not dry_run:
+                            schema_editor.execute(sql)
+
             if not dry_run:
                 drift = self._inspect_schema(models)
                 self._write_drift(drift)
@@ -89,7 +98,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Database schema matches Django model definitions"))
 
     def _inspect_schema(self, models):
-        drift = {"missing_tables": [], "missing_columns": {}, "extra_columns": {}, "extra_defaults": {}, "nullable_mismatches": {}, "type_mismatches": {}, "unique_mismatches": {}}
+        drift = {"missing_tables": [], "missing_columns": {}, "extra_columns": {}, "extra_defaults": {}, "nullable_mismatches": {}, "type_mismatches": {}, "unique_mismatches": {}, "missing_indexes": {}}
         expected_tables = {model._meta.db_table: model for model in models}
 
         with connection.cursor() as cursor:
@@ -126,6 +135,10 @@ class Command(BaseCommand):
                 unique_mismatches = self._unique_mismatches(cursor, table, model, actual_columns)
                 if unique_mismatches:
                     drift["unique_mismatches"][table] = unique_mismatches
+
+                missing_indexes = self._missing_indexes(cursor, table, model)
+                if missing_indexes:
+                    drift["missing_indexes"][table] = missing_indexes
 
         drift["missing_tables"].sort()
         return drift
@@ -358,3 +371,28 @@ class Command(BaseCommand):
                     self.stderr.write(f"Missing unique constraint in {table}.{column}")
                 else:
                     self.stderr.write(f"Extra unique constraint in {table}.{column}")
+
+        for table, indexes in drift["missing_indexes"].items():
+            for index in indexes:
+                self.stderr.write(f"Missing index in {table}: {index.name}")
+
+    def _missing_indexes(self, cursor, table, model):
+        if connection.vendor != "postgresql":
+            return []
+
+        cursor.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND tablename = %s
+            """,
+            [table],
+        )
+        db_indexes = {row[0] for row in cursor.fetchall()}
+
+        missing = []
+        for index in model._meta.indexes:
+            if index.name not in db_indexes:
+                missing.append(index)
+        return missing

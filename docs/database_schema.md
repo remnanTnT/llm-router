@@ -50,9 +50,12 @@ CREATE INDEX servers_online_model_idx
 
 ```sql
 ALTER TABLE models ADD COLUMN vip INTEGER NULL;
+ALTER TABLE models ADD COLUMN deprecation VARCHAR(500) NULL;
 ```
 
 `vip` is admin-managed. Set it to a positive integer to enable VIP routing for that model: it is the per-active-VIP-server workload threshold above which the router promotes another normal server into the VIP pool. `NULL` or `0` disables VIP routing for the model — VIP-port traffic for it is served from the normal pool.
+
+`deprecation` is admin-managed. If it is not `NULL`, the router will return a 400 error with the value of this column as the error message, effectively disabling the model.
 
 ## Request-Table Indexes
 

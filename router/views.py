@@ -71,6 +71,10 @@ def proxy(request, path: str):
         parsed = parser.parse(body)
         model = ModelRepository.get_by_name(parsed.model_name)
 
+        if model and model.deprecation:
+            RequestRepository.create_blocked(ip.id, model.id, parsed.stream, user_agent, 400, "model deprecated")
+            return error_response(400, model.deprecation, "invalid_request_error")
+
         max_token_check = admission.check_max_tokens(parsed.max_tokens, model)
         if not max_token_check.allowed:
             RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 400, "max_tokens exceeded")
