@@ -146,3 +146,16 @@ class Whitelist(models.Model):
     class Meta:
         managed = False
         db_table = "whitelist"
+
+
+class ServerOperation(TimestampedSoftDeleteModel):
+    server_id = models.IntegerField(blank=True, null=True)
+    operation_type = models.CharField(max_length=50)
+    request_data = models.JSONField(blank=True, null=True)
+    response_data = models.JSONField(blank=True, null=True)
+    status = models.CharField(max_length=20)
+    error_message = models.TextField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = "server_operations"
