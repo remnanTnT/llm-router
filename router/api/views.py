@@ -399,5 +399,29 @@ def upsert_mr_live_review(request):
         return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
 
 
+@require_http_methods(["POST"])
+def create_codehub_review(request):
+    import json
+    from router.repositories.codehub_review import CodehubReviewRepository
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    issue_hash = data.get("issue_hash")
+    if not issue_hash:
+        return _bad_request("issue_hash is required")
+
+    if CodehubReviewRepository.exists_by_hash(issue_hash):
+        return JsonResponse({"code": 200, "message": "skipped", "data": {"issue_hash": issue_hash}})
+
+    try:
+        review = CodehubReviewRepository.create(data)
+        return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
+    except Exception as e:
+        return JsonResponse({"code": 500, "error": str(e)}, status=500)
+
+
 def _bad_request(message: str):
     return JsonResponse({"code": 400, "error": message}, status=400)

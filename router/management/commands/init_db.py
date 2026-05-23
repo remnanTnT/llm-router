@@ -6,7 +6,18 @@ class Command(BaseCommand):
     help = "Validate database connectivity and required existing tables."
 
     def handle(self, *args, **options):
-        required = {"ips", "departments", "user_ips", "models", "requests", "whitelist", "servers", "server_operations"}
+        required = {
+            "ips",
+            "departments",
+            "user_ips",
+            "models",
+            "requests",
+            "whitelist",
+            "servers",
+            "server_operations",
+            "mr_live_review",
+            "codehub_review",
+        }
         with connection.cursor() as cursor:
             existing = set(connection.introspection.table_names(cursor))
         missing = sorted(required - existing)
