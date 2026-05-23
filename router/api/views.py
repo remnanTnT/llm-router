@@ -402,12 +402,19 @@ def upsert_mr_live_review(request):
 @require_http_methods(["POST"])
 def create_codehub_review(request):
     import json
+    from router.models import CodehubReview
     from router.repositories.codehub_review import CodehubReviewRepository
 
     try:
         data = json.loads(request.body)
     except (json.JSONDecodeError, ValueError):
         return _bad_request("invalid JSON body")
+
+    # Validate that all keys in data match model fields
+    valid_fields = {f.name for f in CodehubReview._meta.fields}
+    extra_fields = set(data.keys()) - valid_fields
+    if extra_fields:
+        return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
 
     issue_hash = data.get("issue_hash")
     if not issue_hash:

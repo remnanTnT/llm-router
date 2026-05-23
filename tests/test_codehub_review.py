@@ -46,3 +46,16 @@ def test_create_codehub_review_missing_hash():
     response = client.post("/api/codehub_review", data=json.dumps(data), content_type="application/json")
     assert response.status_code == 400
     assert "issue_hash is required" in response.json()["error"]
+
+@pytest.mark.django_db
+def test_create_codehub_review_invalid_fields():
+    client = Client()
+    data = {
+        "project_id": 1,
+        "issue_hash": "hash_invalid",
+        "unknown_field": "some value"
+    }
+    response = client.post("/api/codehub_review", data=json.dumps(data), content_type="application/json")
+    assert response.status_code == 400
+    assert "invalid fields: unknown_field" in response.json()["error"]
+    assert CodehubReview.objects.filter(issue_hash="hash_invalid").count() == 0
