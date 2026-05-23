@@ -138,22 +138,40 @@ class RequestRepository:
 
     @staticmethod
     def cleanup_stale(model_id: int | None = None, threshold_minutes: int = 20) -> int:
+        from django.db import transaction
         from router.repositories.servers import ServerRepository
 
         cutoff = timezone.now() - timedelta(minutes=threshold_minutes)
         qs = RequestRecord.objects.filter(task_status="processing", send_time__lt=cutoff)
         if model_id:
             qs = qs.filter(model_id=model_id)
-        target_counts = {
-            row["target_pod_ip"]: row["count"]
-            for row in qs.exclude(target_pod_ip__isnull=True)
-            .values("target_pod_ip")
-            .annotate(count=models.Count("id"))
-        }
-        updated = qs.update(task_status="incomplete", end_time=timezone.now(), fail_reason="stale processing")
-        if target_counts:
-            ServerRepository.decrement_workload_by_targets(target_counts)
-        return updated
+
+        # Batch process up to 100 stale records in a single transaction.
+        # This ensures that workload decrements perfectly match the records 
+        # being marked as incomplete, even with concurrent cleanup attempts.
+        # skip_locked=True prevents multiple requests from blocking on the same stale records.
+        with transaction.atomic():
+            stale_records = list(qs.select_for_update(skip_locked=True)[:100])
+            if not stale_records:
+                return 0
+
+            target_counts = {}
+            record_ids = []
+            for record in stale_records:
+                record_ids.append(record.id)
+                if record.target_pod_ip:
+                    target_counts[record.target_pod_ip] = target_counts.get(record.target_pod_ip, 0) + 1
+
+            # Atomic status update
+            RequestRecord.objects.filter(id__in=record_ids).update(
+                task_status="incomplete",
+                end_time=timezone.now(),
+                fail_reason="stale processing",
+            )
+            # Atomic workload decrement
+            if target_counts:
+                ServerRepository.decrement_workload_by_targets(target_counts)
+            return len(record_ids)
 
     @staticmethod
     def count_processing(ip_id: int, model_id: int) -> int:
