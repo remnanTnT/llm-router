@@ -159,3 +159,37 @@ class ServerOperation(TimestampedSoftDeleteModel):
     class Meta:
         managed = False
         db_table = "server_operations"
+
+
+class MrLiveReview(models.Model):
+    project_name = models.CharField(max_length=200)
+    source = models.CharField(max_length=50)
+    discussion_id = models.CharField(max_length=100, unique=True)
+    is_ai_comment = models.BooleanField()
+    is_valid_ai_comment = models.BooleanField()
+    rejected = models.BooleanField()
+    target_branch = models.CharField(max_length=200)
+    state = models.CharField(max_length=50)
+    merge_request_iid = models.IntegerField()
+    merge_url = models.TextField()
+    assignee = models.CharField(max_length=200)
+    resolved_by_committer = models.CharField(max_length=200)
+    diff_file = models.CharField(max_length=500)
+    severity = models.CharField(max_length=50)
+    severity_cn = models.CharField(max_length=50)
+    body = models.TextField()
+    code = models.TextField()
+    comment = models.TextField()
+    categories = models.CharField(max_length=200)
+    fix_suggestion = models.TextField()
+    confidence_score = models.CharField(max_length=50)
+    line = models.IntegerField()
+    old_path = models.CharField(max_length=500)
+    new_path = models.CharField(max_length=500)
+    patchset_iid = models.IntegerField()
+    author_name = models.CharField(max_length=200)
+    created_at = models.CharField(max_length=100)
+
+    class Meta:
+        managed = False
+        db_table = "mr_live_review"

@@ -10,14 +10,14 @@ from django.db import connection
 
 django.setup()
 
-from router.models import Model, RequestRecord, Server, Whitelist, ServerOperation
+from router.models import Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview
 
 
 @pytest.fixture(scope="session", autouse=True)
 def api_test_tables():
     existing_tables = connection.introspection.table_names()
     with connection.schema_editor() as schema_editor:
-        for model in (Model, RequestRecord, Server, Whitelist, ServerOperation):
+        for model in (Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview):
             if model._meta.db_table not in existing_tables:
                 schema_editor.create_model(model)
         if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "last_match"):
@@ -50,3 +50,4 @@ def clean_api_tables(api_test_tables):
     Whitelist.objects.all().delete()
     Model.objects.all().delete()
     ServerOperation.objects.all().delete()
+    MrLiveReview.objects.all().delete()
