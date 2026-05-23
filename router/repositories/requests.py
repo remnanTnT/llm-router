@@ -137,7 +137,7 @@ class RequestRepository:
         record.save(update_fields=update_fields)
 
     @staticmethod
-    def cleanup_stale(model_id: int | None = None, threshold_minutes: int = 20) -> int:
+    def cleanup_stale(model_id: int | None = None, threshold_minutes: int = 20, ip_id: int | None = None) -> int:
         from django.db import transaction
         from router.repositories.servers import ServerRepository
 
@@ -145,6 +145,8 @@ class RequestRepository:
         qs = RequestRecord.objects.filter(task_status="processing", send_time__lt=cutoff)
         if model_id:
             qs = qs.filter(model_id=model_id)
+        if ip_id:
+            qs = qs.filter(ip_id=ip_id)
 
         # Batch process up to 100 stale records in a single transaction.
         # This ensures that workload decrements perfectly match the records 

@@ -12,7 +12,7 @@ def parse_sse_usage(chunks: bytes | list[bytes] | str) -> tuple[int, int]:
         raw = chunks
 
     usage: dict | None = None
-    for line in raw.splitlines():
+    for line in reversed(raw.splitlines()):
         line = line.strip()
         if not line.startswith("data:"):
             continue
@@ -25,6 +25,7 @@ def parse_sse_usage(chunks: bytes | list[bytes] | str) -> tuple[int, int]:
             continue
         if isinstance(obj, dict) and isinstance(obj.get("usage"), dict):
             usage = obj["usage"]
+            break
     if not usage:
         return 0, 0
     return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)

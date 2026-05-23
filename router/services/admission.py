@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
+from typing import ClassVar
 
 from router.config import APP_CONFIG
 from router.models import IP, Model
@@ -22,6 +24,10 @@ class AdmissionResult:
 
 
 class AdmissionService:
+    # model_id -> last_cleanup_timestamp
+    _last_cleanup: ClassVar[dict[int, float]] = {}
+    _cleanup_throttle_seconds: ClassVar[int] = 10
+
     def __init__(self):
         self.allow_missing_user_info = bool(APP_CONFIG.get("admission", {}).get("allow_when_user_info_missing", True))
         self.stale_minutes = int(APP_CONFIG.get("proxy", {}).get("stale_processing_minutes", 20))
@@ -58,9 +64,25 @@ class AdmissionService:
     def check_concurrency(self, ip: IP, model: Model | None) -> AdmissionResult:
         if not model or model.concurrent_limit is None:
             return AdmissionResult(True)
-        RequestRepository.cleanup_stale(model.id, self.stale_minutes)
+
+        # Throttled Auto-Cleanup: Guarantee that stale requests (zombies) are 
+        # cleared regularly without hitting the DB on every single request.
+        now = time.time()
+        last_run = self._last_cleanup.get(model.id, 0)
+        if now - last_run > self._cleanup_throttle_seconds:
+            RequestRepository.cleanup_stale(model_id=model.id, threshold_minutes=self.stale_minutes)
+            self._last_cleanup[model.id] = now
+
         limit = max(1, math.ceil(model.concurrent_limit * (ip.concurrent_multiplier or 1.0)))
         current = RequestRepository.count_processing(ip.id, model.id)
+
+        if current >= limit:
+            # Final fallback: If we are still at the limit, do a targeted cleanup for this specific IP.
+            # This ensures the user is never blocked by their own stale requests.
+            cleaned = RequestRepository.cleanup_stale(model_id=model.id, threshold_minutes=self.stale_minutes, ip_id=ip.id)
+            if cleaned > 0:
+                current = RequestRepository.count_processing(ip.id, model.id)
+
         if current >= limit:
             return AdmissionResult(
                 False,
