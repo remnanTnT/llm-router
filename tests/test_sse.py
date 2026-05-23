@@ -10,8 +10,18 @@ def test_parse_sse_usage_returns_last_usage_event():
             b"data: [DONE]\n\n",
         ]
     )
-    assert parse_sse_usage(raw) == (5, 6)
+    assert parse_sse_usage(raw) == (5, 6, 0)
+
+
+def test_parse_sse_usage_with_cached_tokens():
+    raw = b"".join(
+        [
+            b'data: {"usage":{"prompt_tokens":2006,"completion_tokens":300,"prompt_tokens_details":{"cached_tokens":1920}}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    assert parse_sse_usage(raw) == (2006, 300, 1920)
 
 
 def test_parse_sse_usage_ignores_invalid_json():
-    assert parse_sse_usage("data: nope\n\ndata: [DONE]\n\n") == (0, 0)
+    assert parse_sse_usage("data: nope\n\ndata: [DONE]\n\n") == (0, 0, 0)

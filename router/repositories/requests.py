@@ -43,6 +43,7 @@ class RequestRepository:
             output_token_cnt=0,
             attempt_count=0,
             prefix_cache=0.0,
+            final_prefix_cache=0,
             last_match=None,
         )
 
@@ -73,6 +74,7 @@ class RequestRepository:
             user_agent=(user_agent or "")[:500],
             attempt_count=0,
             prefix_cache=0.0,
+            final_prefix_cache=0,
             last_match=None,
         )
 
@@ -87,6 +89,7 @@ class RequestRepository:
         model_id: int | None = None,
         task_status: str | None = None,
         attempt_count: int | None = None,
+        final_prefix_cache: int = 0,
     ) -> None:
         end_time = timezone.now()
         record.end_time = end_time
@@ -96,6 +99,7 @@ class RequestRepository:
         record.fail_reason = None if record.task_status == "success" else reason[:200]
         record.input_token_cnt = input_tokens or 0
         record.output_token_cnt = output_tokens or 0
+        record.final_prefix_cache = final_prefix_cache or 0
         update_fields = [
             "end_time",
             "latency",
@@ -104,6 +108,7 @@ class RequestRepository:
             "fail_reason",
             "input_token_cnt",
             "output_token_cnt",
+            "final_prefix_cache",
         ]
         if target_pod_ip:
             record.target_pod_ip = target_pod_ip[:500]

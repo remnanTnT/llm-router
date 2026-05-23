@@ -22,6 +22,8 @@ def api_test_tables():
                 schema_editor.create_model(model)
         if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "last_match"):
             schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("last_match"))
+        if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "final_prefix_cache"):
+            schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("final_prefix_cache"))
         # Circuit breaker columns
         for col in ("circuit_state", "consecutive_failures", "last_state_change_at", "cooldown_seconds", "workload"):
             if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", col):

@@ -140,7 +140,7 @@ def test_workload_decremented_after_stream_error_response(monkeypatch):
         upstream = _make_upstream(400, b'{"error": {"message": "bad"}}')
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.request", fake_request)
+    monkeypatch.setattr("router.services.proxy._SHARED_SESSION.request", fake_request)
 
     django_request = MagicMock()
     django_request.method = "POST"
@@ -171,7 +171,7 @@ def test_workload_kept_until_stream_generator_completes(monkeypatch):
         upstream.iter_content = lambda chunk_size=8192: iter(chunks)
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.request", fake_request)
+    monkeypatch.setattr("router.services.proxy._SHARED_SESSION.request", fake_request)
 
     django_request = MagicMock()
     django_request.method = "POST"

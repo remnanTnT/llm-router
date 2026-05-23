@@ -84,6 +84,17 @@ def test_finish_status_success_clears_fail_reason():
     assert record.fail_reason is None
 
 
+def test_finish_persists_final_prefix_cache():
+    record = RequestRepository.create_processing(ip_id=1, model_id=7, is_stream=False, user_agent="pytest")
+
+    RequestRepository.finish(record, 200, "OK", input_tokens=10, output_tokens=20, final_prefix_cache=1920)
+
+    record.refresh_from_db()
+    assert record.input_token_cnt == 10
+    assert record.output_token_cnt == 20
+    assert record.final_prefix_cache == 1920
+
+
 def test_finish_status_handles_client_closed_request():
     record = RequestRepository.create_processing(ip_id=1, model_id=7, is_stream=False, user_agent="pytest")
 
