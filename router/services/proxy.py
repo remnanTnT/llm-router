@@ -200,8 +200,8 @@ class ProxyService:
                         return response
 
                     if not is_stream:
-                        input_tokens, output_tokens = self._parse_json_usage(content)
-                        RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, model.id if model else None, attempt_count=attempts)
+                        input_tokens, output_tokens, cached_tokens = self._parse_json_usage(content)
+                        RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, model.id if model else None, attempt_count=attempts, final_prefix_cache=cached_tokens)
                         self._after_finish(served_as_vip, model)
                         
                         response = HttpResponse(content, status=status_code)
@@ -292,9 +292,9 @@ class ProxyService:
                         chunks.append(chunk)
                         yield chunk
                 self._notify_chooser_response(server, context, status_code)
-                input_tokens, output_tokens = parse_sse_usage(chunks)
+                input_tokens, output_tokens, cached_tokens = parse_sse_usage(chunks)
                 final_model_id = self._ensure_model_after_success(model_name, status_code)
-                RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, final_model_id, attempt_count=attempts)
+                RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, final_model_id, attempt_count=attempts, final_prefix_cache=cached_tokens)
             except requests.exceptions.ReadTimeout:
                 yield timeout_sse_event()
                 RequestRepository.finish(record, 504, "request timeout, please try again later", target_pod_ip=target_pod_ip, attempt_count=attempts)
@@ -324,15 +324,19 @@ class ProxyService:
             time.sleep(self.opencode_failure_delay)
 
     @staticmethod
-    def _parse_json_usage(content: bytes) -> tuple[int, int]:
+    def _parse_json_usage(content: bytes) -> tuple[int, int, int]:
         try:
             data = json.loads(content.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return 0, 0
+            return 0, 0, 0
         usage = data.get("usage") if isinstance(data, dict) else None
         if not isinstance(usage, dict):
-            return 0, 0
-        return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+            return 0, 0, 0
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        details = usage.get("prompt_tokens_details")
+        cached_tokens = int(details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
+        return prompt_tokens, completion_tokens, cached_tokens
 
     @staticmethod
     def _extract_fail_reason(content: bytes, http_reason: str) -> str:

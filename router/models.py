@@ -98,6 +98,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
     target_pod_ip = models.CharField(max_length=500, blank=True, null=True)
     attempt_count = models.IntegerField(default=0)
     prefix_cache = models.FloatField(default=0.0)
+    final_prefix_cache = models.IntegerField(default=0)
     last_match = models.BigIntegerField(blank=True, null=True)
 
     class Meta:
