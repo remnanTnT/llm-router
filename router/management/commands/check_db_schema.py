@@ -15,95 +15,108 @@ class Command(BaseCommand):
         fix = options.get("fix")
         dry_run = options.get("dry_run")
 
-        drift = self._inspect_schema(models)
-        self._write_drift(drift)
+        pass_count = 0
+        while True:
+            drift = self._inspect_schema(models)
+            if not any(drift.values()):
+                break
 
-        if fix:
-            for table in drift["missing_tables"]:
-                model = {m._meta.db_table: m for m in models}[table]
-                sql = self._create_table_sql(model)
+            if pass_count == 0:
+                self._write_drift(drift)
+
+            if not fix:
+                raise SystemExit(1)
+
+            if dry_run:
+                self._apply_fixes(drift, models, dry_run=True)
+                break
+
+            self._apply_fixes(drift, models, dry_run=False)
+            pass_count += 1
+            if pass_count > 5:  # Prevent infinite loop
+                self.stderr.write("Still have drift after 5 passes, stopping.")
+                raise SystemExit(1)
+            self.stdout.write("Applied fixes, re-checking schema...")
+
+        self.stdout.write(self.style.SUCCESS("Database schema matches Django model definitions"))
+
+    def _apply_fixes(self, drift, models, dry_run):
+        for table in drift["missing_tables"]:
+            model = {m._meta.db_table: m for m in models}[table]
+            sql = self._create_table_sql(model)
+            self.stdout.write(sql)
+            if not dry_run:
+                with connection.schema_editor() as schema_editor:
+                    schema_editor.execute(sql)
+
+        for table, columns in drift["missing_columns"].items():
+            model = {m._meta.db_table: m for m in models}[table]
+            for column in columns:
+                sql = self._add_column_sql(model, column)
                 self.stdout.write(sql)
                 if not dry_run:
                     with connection.schema_editor() as schema_editor:
                         schema_editor.execute(sql)
 
-            for table, columns in drift["missing_columns"].items():
-                model = {m._meta.db_table: m for m in models}[table]
-                for column in columns:
-                    sql = self._add_column_sql(model, column)
-                    self.stdout.write(sql)
-                    if not dry_run:
-                        with connection.schema_editor() as schema_editor:
-                            schema_editor.execute(sql)
-
-            for table, columns in drift["extra_columns"].items():
-                for column in columns:
-                    sql = self._drop_column_sql(table, column)
-                    self.stdout.write(sql)
-                    if not dry_run:
-                        with connection.schema_editor() as schema_editor:
-                            schema_editor.execute(sql)
-
-            for table, columns in drift["extra_defaults"].items():
-                for column in columns:
-                    sql = self._drop_default_sql(table, column)
-                    self.stdout.write(sql)
-                    if not dry_run:
-                        with connection.schema_editor() as schema_editor:
-                            schema_editor.execute(sql)
-
-            for table, columns in drift["missing_auto_increment"].items():
-                for column in columns:
-                    sql = self._add_auto_increment_sql(table, column)
-                    self.stdout.write(sql)
-                    if not dry_run:
-                        with connection.schema_editor() as schema_editor:
-                            schema_editor.execute(sql)
-
-            for table, mismatches in drift["nullable_mismatches"].items():
-                for column, expected_null in mismatches.items():
-                    sql = self._alter_nullable_sql(table, column, expected_null)
-                    self.stdout.write(sql)
-                    if not dry_run:
-                        with connection.schema_editor() as schema_editor:
-                            schema_editor.execute(sql)
-
-            for table, mismatches in drift["type_mismatches"].items():
-                for column, info in mismatches.items():
-                    sql = self._alter_type_sql(table, column, info["expected"])
-                    self.stdout.write(sql)
-                    if not dry_run:
-                        with connection.schema_editor() as schema_editor:
-                            schema_editor.execute(sql)
-
-            for table, mismatches in drift["unique_mismatches"].items():
-                for column, status in mismatches.items():
-                    if status == "missing":
-                        sql = self._add_unique_sql(table, column)
-                    else:
-                        sql = self._drop_unique_sql(table, column)
-                    self.stdout.write(sql)
-                    if not dry_run:
-                        with connection.schema_editor() as schema_editor:
-                            schema_editor.execute(sql)
-
-            for table, indexes in drift["missing_indexes"].items():
-                model = {m._meta.db_table: m for m in models}[table]
-                for index in indexes:
+        for table, columns in drift["extra_columns"].items():
+            for column in columns:
+                sql = self._drop_column_sql(table, column)
+                self.stdout.write(sql)
+                if not dry_run:
                     with connection.schema_editor() as schema_editor:
-                        sql = str(index.create_sql(model, schema_editor))
-                        self.stdout.write(sql)
-                        if not dry_run:
-                            schema_editor.execute(sql)
+                        schema_editor.execute(sql)
 
-            if not dry_run:
-                drift = self._inspect_schema(models)
-                self._write_drift(drift)
+        for table, columns in drift["extra_defaults"].items():
+            for column in columns:
+                sql = self._drop_default_sql(table, column)
+                self.stdout.write(sql)
+                if not dry_run:
+                    with connection.schema_editor() as schema_editor:
+                        schema_editor.execute(sql)
 
-        if any(drift.values()):
-            raise SystemExit(1)
+        for table, columns in drift["missing_auto_increment"].items():
+            for column in columns:
+                sql = self._add_auto_increment_sql(table, column)
+                self.stdout.write(sql)
+                if not dry_run:
+                    with connection.schema_editor() as schema_editor:
+                        schema_editor.execute(sql)
 
-        self.stdout.write(self.style.SUCCESS("Database schema matches Django model definitions"))
+        for table, mismatches in drift["nullable_mismatches"].items():
+            for column, expected_null in mismatches.items():
+                sql = self._alter_nullable_sql(table, column, expected_null)
+                self.stdout.write(sql)
+                if not dry_run:
+                    with connection.schema_editor() as schema_editor:
+                        schema_editor.execute(sql)
+
+        for table, mismatches in drift["type_mismatches"].items():
+            for column, info in mismatches.items():
+                sql = self._alter_type_sql(table, column, info["expected"])
+                self.stdout.write(sql)
+                if not dry_run:
+                    with connection.schema_editor() as schema_editor:
+                        schema_editor.execute(sql)
+
+        for table, mismatches in drift["unique_mismatches"].items():
+            for column, status in mismatches.items():
+                if status == "missing":
+                    sql = self._add_unique_sql(table, column)
+                else:
+                    sql = self._drop_unique_sql(table, column)
+                self.stdout.write(sql)
+                if not dry_run:
+                    with connection.schema_editor() as schema_editor:
+                        schema_editor.execute(sql)
+
+        for table, indexes in drift["missing_indexes"].items():
+            model = {m._meta.db_table: m for m in models}[table]
+            for index in indexes:
+                with connection.schema_editor() as schema_editor:
+                    sql = str(index.create_sql(model, schema_editor))
+                    self.stdout.write(sql)
+                    if not dry_run:
+                        schema_editor.execute(sql)
 
     def _inspect_schema(self, models):
         drift = {
@@ -225,11 +238,6 @@ class Command(BaseCommand):
         quote_name = connection.ops.quote_name
         return f"ALTER TABLE {quote_name(table)} ALTER COLUMN {quote_name(column)} ADD GENERATED BY DEFAULT AS IDENTITY;"
 
-    def _add_unique_sql(self, table, column):
-        quote_name = connection.ops.quote_name
-        constraint_name = f"{table}_{column}_key"
-        return f"ALTER TABLE {quote_name(table)} ADD CONSTRAINT {quote_name(constraint_name)} UNIQUE ({quote_name(column)});"
-
     def _nullable_mismatches(self, model, actual_columns, actual_nullable):
         mismatches = {}
         for field in model._meta.local_concrete_fields:
@@ -286,6 +294,7 @@ class Command(BaseCommand):
             "date": "date",
             "timestamp with time zone": "timestamp with time zone",
             "timestamp without time zone": "timestamp without time zone",
+            "jsonb": "jsonb",
         }
         base = type_map.get(data_type, data_type)
         if base in ("varchar", "char") and char_max_len is not None:
@@ -364,6 +373,11 @@ class Command(BaseCommand):
                     else:
                         parts.append(f"DEFAULT {default}")
             col_defs.append(" ".join(parts))
+
+        for unique_together in model._meta.unique_together:
+            columns = ", ".join([quote_name(model._meta.get_field(f).column) for f in unique_together])
+            col_defs.append(f"UNIQUE ({columns})")
+
         return f"CREATE TABLE {quote_name(table)} ({', '.join(col_defs)});"
 
     def _add_column_sql(self, model, column_name):

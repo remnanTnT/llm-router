@@ -66,3 +66,16 @@ def test_upsert_mr_live_review_missing_id():
     response = client.post(url, data=json.dumps(payload), content_type="application/json")
     assert response.status_code == 400
     assert "discussion_id is required" in response.json()["error"]
+
+@pytest.mark.django_db
+def test_upsert_mr_live_review_invalid_field():
+    client = Client()
+    url = "/api/mr_live_review"
+    payload = {
+        "discussion_id": "disc_invalid",
+        "state": "opened",
+        "unknown_field": "oops"
+    }
+    response = client.post(url, data=json.dumps(payload), content_type="application/json")
+    assert response.status_code == 400
+    assert "invalid fields: unknown_field" in response.json()["error"]

@@ -193,3 +193,25 @@ class MrLiveReview(models.Model):
     class Meta:
         managed = False
         db_table = "mr_live_review"
+
+
+class CodehubReview(models.Model):
+    id = models.AutoField(primary_key=True)
+    project_id = models.IntegerField()
+    branch = models.CharField(max_length=200)
+    issue_hash = models.CharField(max_length=50, unique=True)
+    mr_hash = models.CharField(max_length=50)
+    file_path = models.CharField(max_length=500)
+    line = models.IntegerField()
+    body = models.TextField()
+    review_comment = models.TextField()
+    severity = models.CharField(max_length=50)
+    categories = models.CharField(max_length=200)
+    fix_suggestion = models.TextField()
+    created_at = models.CharField(max_length=100)
+    confidence_score = models.CharField(max_length=50)
+    issue_url = models.TextField()
+
+    class Meta:
+        managed = False
+        db_table = "codehub_review"
