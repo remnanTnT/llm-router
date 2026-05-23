@@ -148,10 +148,10 @@ def test_prefix_cache_response_hook_only_marks_successful_responses():
     assert PrefixCachePrebleServerChooser._prefix_cache
 
 
-def test_prefix_cache_max_prefix_tokens_is_at_least_100k():
+def test_prefix_cache_max_prefix_tokens_default():
     chooser = PrefixCachePrebleServerChooser(lambda targets: {}, max_prefix_tokens=10)
 
-    assert chooser.max_prefix_tokens >= 100000
+    assert chooser.max_prefix_tokens == 10
 
 
 def test_prefix_cache_uses_renamed_threshold_arguments():
@@ -186,12 +186,21 @@ def test_prefix_cache_preble_specific_cleanup():
 
     root = PrefixCachePrebleServerChooser._prefix_cache.get(model_name)
     from django.utils import timezone
-    PrefixCachePrebleServerChooser._prune_node(root, timezone.now())
+    PrefixCachePrebleServerChooser._prune_node_iterative(root, timezone.now())
 
-    if not root.children and not root.server_cached_at:
+    if root.children is None or (not root.children and not root.server_cached_at):
         del PrefixCachePrebleServerChooser._prefix_cache[model_name]
 
     assert model_name not in PrefixCachePrebleServerChooser._prefix_cache
+
+
+import os
+import psutil
+
+
+def get_process_memory():
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss
 
 
 @pytest.mark.parametrize("chooser_class", [
@@ -212,12 +221,69 @@ def test_all_choosers_memory_growth(chooser_class):
     candidates = [make_server(1, "http://server1")]
     context = make_context()
     
-    # We measure the size of the instance dictionary to detect per-instance leaks.
-    # Note: This doesn't catch class-level leaks (like the prefix cache), 
-    # which should have their own specialized tests.
+    # Track both instance state and process memory
     initial_state_size = len(chooser.__dict__)
+    initial_memory = get_process_memory()
     
-    for i in range(100):
+    for i in range(1000):
         chooser.choose(candidates, context, set())
-        
+    
+    import gc
+    gc.collect()
+    
     assert len(chooser.__dict__) <= initial_state_size, f"{chooser_class.__name__} instance state grew!"
+    
+    # Process memory check is loose because of fragmentation/GC, 
+    # but we shouldn't see massive growth (e.g., > 10MB) for 1000 simple calls.
+    final_memory = get_process_memory()
+    assert (final_memory - initial_memory) < 10 * 1024 * 1024
+
+
+def test_prefix_cache_preble_memory_leak():
+    """Verify that PrefixCachePreble grows with requests and shrinks after pruning."""
+    PrefixCachePrebleServerChooser._prefix_cache = {}
+    PrefixCachePrebleServerChooser._node_count = 0
+    
+    # Small limit and interval for testing
+    chooser = PrefixCachePrebleServerChooser(
+        max_total_nodes=10000, 
+        prune_interval=3600,
+        max_prefix_tokens=100
+    )
+    server = make_server(1, "http://server1", cache_time=1)
+    candidates = [server]
+    
+    initial_memory = get_process_memory()
+    
+    # 1. Grow: Add many unique tokens
+    for i in range(1000):
+        # 10 tokens per request -> 10000 nodes total
+        tokens = [f"unique_token_{i}_{j}" for j in range(10)]
+        body = json.dumps({"prompt": " ".join(tokens)}).encode("utf-8")
+        ctx = make_context(body=body, request_id=i)
+        chooser.on_response(server, ctx, 200)
+    
+    mid_node_count = PrefixCachePrebleServerChooser._node_count
+    mid_memory = get_process_memory()
+    
+    assert mid_node_count >= 10000
+    assert mid_memory > initial_memory
+    
+    # 2. Expire and Prune
+    import time
+    from django.utils import timezone
+    time.sleep(1.1) # Wait for cache_time=1 to expire
+    
+    PrefixCachePrebleServerChooser._prune_all()
+    
+    import gc
+    gc.collect()
+    
+    final_node_count = PrefixCachePrebleServerChooser._node_count
+    final_memory = get_process_memory()
+    
+    assert final_node_count == 0
+    # Memory should be significantly reduced
+    assert final_memory < mid_memory
+    # And close to initial (with some overhead for fragmentation)
+    assert (final_memory - initial_memory) < 5 * 1024 * 1024

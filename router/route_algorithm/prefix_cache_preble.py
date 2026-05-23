@@ -39,6 +39,8 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
     _cache_lock = threading.RLock()
     # model_key -> root TrieNode
     _prefix_cache: dict[str, TrieNode] = {}
+    _node_count = 0
+    _last_prune_time = 0
 
     def __init__(
         self,
@@ -46,13 +48,16 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         primary_match_threshold: float | None = None,
         secondary_match_threshold: float | None = None,
         max_prefix_tokens: int | None = None,
+        max_total_nodes: int | None = None,
+        prune_interval: int | None = None,
     ):
         super().__init__(count_provider)
         prefix_config = APP_CONFIG.get("prefix_cache", {})
         self.primary_match_threshold = self._float_setting(primary_match_threshold, prefix_config.get("primary_match_threshold"), 0.9)
         self.secondary_match_threshold = self._float_setting(secondary_match_threshold, prefix_config.get("secondary_match_threshold"), 0.5)
-        configured_max_prefix_tokens = self._int_setting(max_prefix_tokens, prefix_config.get("max_prefix_tokens"), 200000)
-        self.max_prefix_tokens = max(200000, configured_max_prefix_tokens)
+        self.max_prefix_tokens = self._int_setting(max_prefix_tokens, prefix_config.get("max_prefix_tokens"), 5000)
+        self.max_total_nodes = self._int_setting(max_total_nodes, prefix_config.get("max_total_nodes"), 1000000)
+        self.prune_interval = self._int_setting(prune_interval, prefix_config.get("prune_interval"), 300)
 
     def choose(
         self,
@@ -161,15 +166,34 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         cache_time = 3600 if raw_cache_time is None else int(raw_cache_time)
 
         with self._cache_lock:
-            node = self._prefix_cache.setdefault(model_key, TrieNode())
+            # 1. Periodic/Emergency Pruning
+            if (time.time() - self._last_prune_time > self.prune_interval or 
+                self._node_count > self.max_total_nodes):
+                self._prune_all()
+            
+            # 2. Add to Trie
+            if self._node_count >= self.max_total_nodes:
+                # If still over limit after pruning, skip adding new entries
+                return
+
+            node = self._prefix_cache.get(model_key)
+            if node is None:
+                node = TrieNode()
+                self._prefix_cache[model_key] = node
+                PrefixCachePrebleServerChooser._node_count += 1
+            
             for token in request_tokens:
                 if token not in node.children:
+                    if self._node_count >= self.max_total_nodes:
+                        break
                     node.children[token] = TrieNode()
+                    PrefixCachePrebleServerChooser._node_count += 1
                 node = node.children[token]
                 node.server_cached_at[server.id] = (now, cache_time)
                 node.request_id = context.request_id
 
-    def _evict_expired_from_node(self, node: TrieNode, now: datetime) -> None:
+    @classmethod
+    def _evict_expired_from_node(cls, node: TrieNode, now: datetime) -> None:
         expired = []
         for server_id, (cached_at, cache_time) in node.server_cached_at.items():
             if now - cached_at > timedelta(seconds=cache_time):
@@ -177,13 +201,51 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         for server_id in expired:
             del node.server_cached_at[server_id]
 
+    @classmethod
+    def _prune_all(cls):
+        """Prunes all models in the cache."""
+        now = timezone.now()
+        cls._last_prune_time = time.time()
+        for model_key in list(cls._prefix_cache.keys()):
+            root = cls._prefix_cache[model_key]
+            if cls._prune_node_iterative(root, now):
+                del cls._prefix_cache[model_key]
+                cls._node_count -= 1
+
+    @classmethod
+    def _prune_node_iterative(cls, root: TrieNode, now: datetime) -> bool:
+        """Iteratively removes expired servers and dead branches from the Trie.
+        
+        Returns True if the node itself should be pruned (no children and no server cache).
+        """
+        # stack of (node, parent, token_in_parent, children_iterator)
+        stack = [(root, None, None, iter(list(root.children.items())))]
+        
+        while stack:
+            node, parent, token, children_iter = stack[-1]
+            try:
+                child_token, child_node = next(children_iter)
+                stack.append((child_node, node, child_token, iter(list(child_node.children.items()))))
+            except StopIteration:
+                stack.pop()
+                # Post-order: children are done.
+                # 1. Evict expired from this node
+                cls._evict_expired_from_node(node, now)
+                
+                # 2. If it's a child and it's empty, remove from parent
+                if parent is not None:
+                    if not node.children and not node.server_cached_at:
+                        del parent.children[token]
+                        cls._node_count -= 1
+        
+        return not root.children and not root.server_cached_at
+
     def _tokens_from_body(self, body: bytes) -> tuple[str, ...]:
         text = self._text_from_body(body)
         tokens = text.split()
         if not tokens and text:
             tokens = list(text)
-        # Use sys.intern to share memory for common tokens across all requests
-        return tuple(sys.intern(t) for t in tokens[: self.max_prefix_tokens])
+        return tuple(tokens[: self.max_prefix_tokens])
 
     @staticmethod
     def _text_from_body(body: bytes) -> str:
@@ -255,26 +317,3 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             except (TypeError, ValueError):
                 continue
         return default
-
-    @classmethod
-    def _prune_node(cls, node: TrieNode, now: datetime) -> bool:
-        """Recursively removes expired servers and dead branches from the Trie.
-        
-        Returns True if the node itself should be pruned (no children and no server cache).
-        """
-        # 1. Evict expired servers from this node
-        expired = []
-        for server_id, (cached_at, cache_time) in node.server_cached_at.items():
-            if now - cached_at > timedelta(seconds=cache_time):
-                expired.append(server_id)
-        for server_id in expired:
-            del node.server_cached_at[server_id]
-
-        # 2. Recursively prune children
-        for token in list(node.children.keys()):
-            should_prune_child = cls._prune_node(node.children[token], now)
-            if should_prune_child:
-                del node.children[token]
-
-        # 3. Node can be pruned if it has no children and no active server cache
-        return not node.children and not node.server_cached_at
