@@ -374,43 +374,20 @@ def upsert_mr_live_review(request):
     if not discussion_id:
         return _bad_request("discussion_id is required")
 
+    # Validate that all keys in data match model fields
+    valid_fields = {f.name for f in MrLiveReview._meta.fields if f.name != "id"}
+    extra_fields = set(data.keys()) - valid_fields
+    if extra_fields:
+        return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
+
     state = data.get("state")
 
     try:
         review = MrLiveReview.objects.get(discussion_id=discussion_id)
         if review.state != state:
             # Update the record if state is different
-            fields = [
-                "project_name",
-                "source",
-                "is_ai_comment",
-                "is_valid_ai_comment",
-                "rejected",
-                "target_branch",
-                "state",
-                "merge_request_iid",
-                "merge_url",
-                "assignee",
-                "resolved_by_committer",
-                "diff_file",
-                "severity",
-                "severity_cn",
-                "body",
-                "code",
-                "comment",
-                "categories",
-                "fix_suggestion",
-                "confidence_score",
-                "line",
-                "old_path",
-                "new_path",
-                "patchset_iid",
-                "author_name",
-                "created_at",
-            ]
-            for field in fields:
-                if field in data:
-                    setattr(review, field, data[field])
+            for field, value in data.items():
+                setattr(review, field, value)
             review.save()
             return JsonResponse({"code": 200, "message": "updated", "data": {"id": review.id}})
         else:
@@ -418,35 +395,7 @@ def upsert_mr_live_review(request):
             return JsonResponse({"code": 200, "message": "skipped", "data": {"id": review.id}})
     except MrLiveReview.DoesNotExist:
         # Create a new record if discussion_id does not exist
-        review = MrLiveReview.objects.create(
-            project_name=data.get("project_name", ""),
-            source=data.get("source", ""),
-            discussion_id=discussion_id,
-            is_ai_comment=data.get("is_ai_comment", False),
-            is_valid_ai_comment=data.get("is_valid_ai_comment", False),
-            rejected=data.get("rejected", False),
-            target_branch=data.get("target_branch", ""),
-            state=state or "",
-            merge_request_iid=data.get("merge_request_iid", 0),
-            merge_url=data.get("merge_url", ""),
-            assignee=data.get("assignee", ""),
-            resolved_by_committer=data.get("resolved_by_committer", ""),
-            diff_file=data.get("diff_file", ""),
-            severity=data.get("severity", ""),
-            severity_cn=data.get("severity_cn", ""),
-            body=data.get("body", ""),
-            code=data.get("code", ""),
-            comment=data.get("comment", ""),
-            categories=data.get("categories", ""),
-            fix_suggestion=data.get("fix_suggestion", ""),
-            confidence_score=data.get("confidence_score", ""),
-            line=data.get("line", 0),
-            old_path=data.get("old_path", ""),
-            new_path=data.get("new_path", ""),
-            patchset_iid=data.get("patchset_iid", 0),
-            author_name=data.get("author_name", ""),
-            created_at=data.get("created_at", ""),
-        )
+        review = MrLiveReview.objects.create(**data)
         return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
 
 
