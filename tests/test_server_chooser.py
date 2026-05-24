@@ -187,13 +187,14 @@ def test_prefix_cache_chunks_chinese_text_by_character():
         json.dumps({"prompt": "你好，世界。再"}, ensure_ascii=False).encode("utf-8")
     )
 
-    assert prefix_chars == tuple("你好，世界。再")
-    assert ["".join(prefix) for prefix in chooser._build_prefixes(prefix_chars)] == [
-        "你好",
-        "你好，世",
-        "你好，世界。",
-        "你好，世界。再",
-    ]
+    assert prefix_chars == "你好，世界。再"
+    hashes = chooser._get_prefix_hashes(prefix_chars)
+    # Block size 2, text length 7
+    # 0:2 -> "你好" (2)
+    # 2:4 -> "你好，世" (4)
+    # 4:6 -> "你好，世界。" (6)
+    # 6:7 -> "你好，世界。再" (7)
+    assert [length for _, length in hashes] == [2, 4, 6, 7]
 
 
 def test_prefix_cache_uses_renamed_threshold_arguments():
