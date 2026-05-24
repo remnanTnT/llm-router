@@ -92,11 +92,9 @@ export REDIS_HOST=127.0.0.1
 export REDIS_PORT=6379
 export REDIS_DB=0
 export REDIS_PASSWORD=
-export REDIS_CONTAINER_RUNTIME=podman
-export REDIS_CONTAINER_IMAGE=redis:7-alpine
 export USE_SQLITE_FOR_TESTS=1
 ```
 
-`start_prod.sh` defaults to Redis port `6379`; `start_test.sh` defaults to Redis port `6380`. Both scripts start local Redis automatically only for local Redis hosts. If `redis-server` is not installed, they use Docker or Podman to run a Redis container.
+`start_prod.sh` defaults to Redis port `6379`; `start_test.sh` defaults to Redis port `6380`. Both scripts start local Redis automatically only for local Redis hosts. Install Redis first, for example with `sudo dnf install redis`.
 
 Prefix cache blocks are measured in Python Unicode characters, not LLM tokenizer tokens. This keeps matching language-neutral for Chinese and other no-whitespace prompts. The final partial block is also stored so short prompts and exact full-prefix matches are cacheable.
