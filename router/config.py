@@ -44,6 +44,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "primary_match_threshold": 0.9,
         "secondary_match_threshold": 0.5,
         "max_prefix_tokens": 200000,
+        "block_size": 512,
+        "redis": {
+            "host": "localhost",
+            "port": 6379,
+            "db": 0,
+            "password": None,
+        },
     },
     "opencode": {
         "enabled": True,
@@ -100,6 +107,22 @@ def load_config() -> dict[str, Any]:
         config.setdefault("prefix_cache", {})["primary_match_threshold"] = os.environ["PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD"]
     if "PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD" in os.environ:
         config.setdefault("prefix_cache", {})["secondary_match_threshold"] = os.environ["PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD"]
+    
+    redis_cfg = config.setdefault("prefix_cache", {}).setdefault("redis", {})
+    if "REDIS_HOST" in os.environ:
+        redis_cfg["host"] = os.environ["REDIS_HOST"]
+    if "REDIS_PORT" in os.environ:
+        try:
+            redis_cfg["port"] = int(os.environ["REDIS_PORT"])
+        except (TypeError, ValueError):
+            pass
+    if "REDIS_PASSWORD" in os.environ:
+        redis_cfg["password"] = os.environ["REDIS_PASSWORD"]
+    if "REDIS_DB" in os.environ:
+        try:
+            redis_cfg["db"] = int(os.environ["REDIS_DB"])
+        except (TypeError, ValueError):
+            pass
     return config
 
 

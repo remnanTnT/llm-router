@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import random
-import sys
 import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Sequence
 
+import redis
 from django.utils import timezone
 
 from router.config import APP_CONFIG
@@ -19,28 +20,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class TrieNode:
-    """Memory-efficient Trie node for prefix matching.
-    
-    Using __slots__ to minimize memory overhead per node.
-    """
-    __slots__ = ("children", "server_cached_at", "request_id")
-
-    def __init__(self):
-        # token -> TrieNode
-        self.children: dict[str, TrieNode] = {}
-        # server_id -> (cached_at_timestamp, cache_time_seconds)
-        self.server_cached_at: dict[int, tuple[datetime, int]] = {}
-        # Most recent request_id that passed through or ended at this node
-        self.request_id: int | None = None
-
-
 class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
-    _cache_lock = threading.RLock()
-    # model_key -> root TrieNode
-    _prefix_cache: dict[str, TrieNode] = {}
-    _node_count = 0
-    _last_prune_time = 0
+    _redis_client: redis.Redis | None = None
+    _client_lock = threading.Lock()
 
     def __init__(
         self,
@@ -48,16 +30,35 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         primary_match_threshold: float | None = None,
         secondary_match_threshold: float | None = None,
         max_prefix_tokens: int | None = None,
-        max_total_nodes: int | None = None,
-        prune_interval: int | None = None,
+        block_size: int | None = None,
     ):
         super().__init__(count_provider)
         prefix_config = APP_CONFIG.get("prefix_cache", {})
         self.primary_match_threshold = self._float_setting(primary_match_threshold, prefix_config.get("primary_match_threshold"), 0.9)
         self.secondary_match_threshold = self._float_setting(secondary_match_threshold, prefix_config.get("secondary_match_threshold"), 0.5)
-        self.max_prefix_tokens = self._int_setting(max_prefix_tokens, prefix_config.get("max_prefix_tokens"), 5000)
-        self.max_total_nodes = self._int_setting(max_total_nodes, prefix_config.get("max_total_nodes"), 1000000)
-        self.prune_interval = self._int_setting(prune_interval, prefix_config.get("prune_interval"), 300)
+        self.max_prefix_tokens = self._int_setting(max_prefix_tokens, prefix_config.get("max_prefix_tokens"), 200000)
+        self.block_size = self._int_setting(block_size, prefix_config.get("block_size"), 512)
+        self._ensure_redis()
+
+    def _ensure_redis(self):
+        if PrefixCachePrebleServerChooser._redis_client is not None:
+            return
+        with PrefixCachePrebleServerChooser._client_lock:
+            if PrefixCachePrebleServerChooser._redis_client is not None:
+                return
+            redis_cfg = APP_CONFIG.get("prefix_cache", {}).get("redis", {})
+            try:
+                PrefixCachePrebleServerChooser._redis_client = redis.Redis(
+                    host=redis_cfg.get("host", "localhost"),
+                    port=redis_cfg.get("port", 6379),
+                    db=redis_cfg.get("db", 0),
+                    password=redis_cfg.get("password"),
+                    decode_responses=True,
+                    socket_timeout=2.0,
+                    socket_connect_timeout=2.0,
+                )
+            except Exception as e:
+                logger.error("[PrefixCachePreble] Failed to connect to Redis: %s", e)
 
     def choose(
         self,
@@ -70,46 +71,77 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             return None
 
         request_tokens = self._tokens_from_body(context.body)
-        if not request_tokens:
+        if not request_tokens or self._redis_client is None:
             context.prefix_cache = 0.0
             context.last_match = None
             return self._choose_least_loaded(available)
 
         model_key = context.model_name or str(context.model_id or "")
         available_by_id = {server.id: server for server in available}
-        now = timezone.now()
         
-        cached_matches = []
+        # 1. Generate prefix hashes for all blocks
+        prefixes = []
+        for i in range(self.block_size, len(request_tokens) + 1, self.block_size):
+            prefixes.append(request_tokens[:i])
+        if len(request_tokens) % self.block_size != 0:
+            prefixes.append(request_tokens)
+        
+        if not prefixes:
+            return self._choose_least_loaded(available)
+
+        prefix_hashes = [self._hash_tokens(p) for p in prefixes]
+        redis_keys = [f"prefix:{model_key}:{h}" for h in prefix_hashes]
+
+        # 2. MGET from Redis
+        try:
+            cached_values = self._redis_client.mget(redis_keys)
+        except Exception as e:
+            logger.error("[PrefixCachePreble] Redis MGET failed: %s", e)
+            cached_values = [None] * len(redis_keys)
+
+        # 3. Find longest match
         best_match_ratio = 0.0
         best_match_request_id = None
+        cached_matches = []
         server_match_ratios: dict[int, float] = {}
+        now_ts = time.time()
 
-        with self._cache_lock:
-            root = self._prefix_cache.get(model_key)
-            if root:
-                node = root
-                for i, token in enumerate(request_tokens):
-                    if token not in node.children:
-                        break
-                    node = node.children[token]
-                    match_ratio = (i + 1) / len(request_tokens)
-                    
-                    # Clean up expired entries on the path we walk
-                    self._evict_expired_from_node(node, now)
-                    
-                    if node.server_cached_at:
-                        if match_ratio > best_match_ratio:
-                            best_match_ratio = match_ratio
-                            best_match_request_id = node.request_id
+        for i, val in enumerate(cached_values):
+            if not val:
+                continue
+            
+            try:
+                # Value format: {"request_id": int, "servers": {server_id: expiry_ts, ...}}
+                data = json.loads(val)
+                request_id = data.get("request_id")
+                servers_data = data.get("servers", {})
+                
+                match_ratio = len(prefixes[i]) / len(request_tokens)
+                found_valid_server_for_ratio = False
+                
+                valid_servers_in_this_prefix = []
+                for s_id_str, expiry_ts in servers_data.items():
+                    if now_ts < expiry_ts:
+                        s_id = int(s_id_str)
+                        found_valid_server_for_ratio = True
                         
-                        for server_id in node.server_cached_at:
-                            if match_ratio > server_match_ratios.get(server_id, 0.0):
-                                server_match_ratios[server_id] = match_ratio
-                            
-                            if match_ratio > self.primary_match_threshold:
-                                server = available_by_id.get(server_id)
-                                if server:
-                                    cached_matches.append(server)
+                        if match_ratio > server_match_ratios.get(s_id, 0.0):
+                            server_match_ratios[s_id] = match_ratio
+                        
+                        if match_ratio > self.primary_match_threshold:
+                            server = available_by_id.get(s_id)
+                            if server:
+                                valid_servers_in_this_prefix.append(server)
+                
+                if found_valid_server_for_ratio:
+                    if match_ratio > best_match_ratio:
+                        best_match_ratio = match_ratio
+                        best_match_request_id = request_id
+                
+                if valid_servers_in_this_prefix:
+                    cached_matches = valid_servers_in_this_prefix # Update with the longest match's servers
+            except Exception as e:
+                logger.error("[PrefixCachePreble] Failed to parse cached value: %s", e)
 
         logger.info(
             "[PrefixCachePreble] match_ratio per server (model=%s, best=%.4f):",
@@ -124,9 +156,9 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
 
         context.prefix_cache = best_match_ratio
         context.last_match = best_match_request_id
+        
         if cached_matches:
-            unique_cached = {server.id: server for server in cached_matches}.values()
-            return self._choose_least_loaded(list(unique_cached))
+            return self._choose_least_loaded(cached_matches)
 
         secondary_matches = [
             server for server in available
@@ -136,6 +168,55 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             return self._choose_least_loaded(secondary_matches)
 
         return self._choose_least_loaded(available)
+
+    def on_response(self, server: Any, context: ServerSelectionContext, status_code: int) -> None:
+        if not 200 <= status_code < 300 or self._redis_client is None:
+            return
+        request_tokens = self._tokens_from_body(context.body)
+        if not request_tokens:
+            return
+
+        model_key = context.model_name or str(context.model_id or "")
+        raw_cache_time = getattr(server, "cache_time", 3600)
+        cache_time = 3600 if raw_cache_time is None else int(raw_cache_time)
+        expiry_ts = time.time() + cache_time
+
+        # Generate hashes for blocks and full request
+        prefixes_to_save = []
+        for i in range(self.block_size, len(request_tokens) + 1, self.block_size):
+            prefixes_to_save.append(request_tokens[:i])
+        if len(request_tokens) % self.block_size != 0:
+            prefixes_to_save.append(request_tokens)
+
+        if not prefixes_to_save:
+            return
+
+        try:
+            pipe = self._redis_client.pipeline()
+            for p in prefixes_to_save:
+                h = self._hash_tokens(p)
+                key = f"prefix:{model_key}:{h}"
+                
+                # We want to add this server to the list of servers for this prefix
+                # To be efficient and atomic, we'll try to use a Lua script or just a simple GET-then-SET
+                # Given we have 32 threads, GET-then-SET might have races, but they are benign (just multiple servers).
+                # However, the user said "make sure THIS server can serve", implying sticky.
+                # Let's use a simple SET with the current server as the primary, but we can merge if needed.
+                # Actually, to keep it simple and fulfill "save the whole request":
+                data = {
+                    "request_id": context.request_id,
+                    "servers": {str(server.id): expiry_ts}
+                }
+                # We overwrite or merge? Overwriting with the LATEST success is a valid strategy for "sticky" cache.
+                # But merging is better for "least connection" among multiple good servers.
+                # For now, let's overwrite to ensure the "latest" successful server is remembered.
+                pipe.set(key, json.dumps(data), ex=cache_time)
+            pipe.execute()
+        except Exception as e:
+            logger.error("[PrefixCachePreble] Redis SET failed: %s", e)
+
+    def _hash_tokens(self, tokens: tuple[str, ...]) -> str:
+        return hashlib.sha256(" ".join(tokens).encode("utf-8")).hexdigest()
 
     def _choose_least_loaded(self, available: Sequence[Any]) -> Any | None:
         if not available:
@@ -152,93 +233,6 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         min_count = min(processing_counts.get(server.base_url, 0) for server in available)
         least_loaded = [server for server in available if processing_counts.get(server.base_url, 0) == min_count]
         return random.choice(least_loaded)
-
-    def on_response(self, server: Any, context: ServerSelectionContext, status_code: int) -> None:
-        if not 200 <= status_code < 300:
-            return
-        request_tokens = self._tokens_from_body(context.body)
-        if not request_tokens:
-            return
-
-        model_key = context.model_name or str(context.model_id or "")
-        now = timezone.now()
-        raw_cache_time = getattr(server, "cache_time", 3600)
-        cache_time = 3600 if raw_cache_time is None else int(raw_cache_time)
-
-        with self._cache_lock:
-            # 1. Periodic/Emergency Pruning
-            if (time.time() - self._last_prune_time > self.prune_interval or 
-                self._node_count > self.max_total_nodes):
-                self._prune_all()
-            
-            # 2. Add to Trie
-            if self._node_count >= self.max_total_nodes:
-                # If still over limit after pruning, skip adding new entries
-                return
-
-            node = self._prefix_cache.get(model_key)
-            if node is None:
-                node = TrieNode()
-                self._prefix_cache[model_key] = node
-                PrefixCachePrebleServerChooser._node_count += 1
-            
-            for token in request_tokens:
-                if token not in node.children:
-                    if self._node_count >= self.max_total_nodes:
-                        break
-                    node.children[token] = TrieNode()
-                    PrefixCachePrebleServerChooser._node_count += 1
-                node = node.children[token]
-                node.server_cached_at[server.id] = (now, cache_time)
-                node.request_id = context.request_id
-
-    @classmethod
-    def _evict_expired_from_node(cls, node: TrieNode, now: datetime) -> None:
-        expired = []
-        for server_id, (cached_at, cache_time) in node.server_cached_at.items():
-            if now - cached_at > timedelta(seconds=cache_time):
-                expired.append(server_id)
-        for server_id in expired:
-            del node.server_cached_at[server_id]
-
-    @classmethod
-    def _prune_all(cls):
-        """Prunes all models in the cache."""
-        now = timezone.now()
-        cls._last_prune_time = time.time()
-        for model_key in list(cls._prefix_cache.keys()):
-            root = cls._prefix_cache[model_key]
-            if cls._prune_node_iterative(root, now):
-                del cls._prefix_cache[model_key]
-                cls._node_count -= 1
-
-    @classmethod
-    def _prune_node_iterative(cls, root: TrieNode, now: datetime) -> bool:
-        """Iteratively removes expired servers and dead branches from the Trie.
-        
-        Returns True if the node itself should be pruned (no children and no server cache).
-        """
-        # stack of (node, parent, token_in_parent, children_iterator)
-        stack = [(root, None, None, iter(list(root.children.items())))]
-        
-        while stack:
-            node, parent, token, children_iter = stack[-1]
-            try:
-                child_token, child_node = next(children_iter)
-                stack.append((child_node, node, child_token, iter(list(child_node.children.items()))))
-            except StopIteration:
-                stack.pop()
-                # Post-order: children are done.
-                # 1. Evict expired from this node
-                cls._evict_expired_from_node(node, now)
-                
-                # 2. If it's a child and it's empty, remove from parent
-                if parent is not None:
-                    if not node.children and not node.server_cached_at:
-                        del parent.children[token]
-                        cls._node_count -= 1
-        
-        return not root.children and not root.server_cached_at
 
     def _tokens_from_body(self, body: bytes) -> tuple[str, ...]:
         text = self._text_from_body(body)
