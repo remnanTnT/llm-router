@@ -471,3 +471,16 @@ class TestProxyVIPRouting:
 
         assert served is True
         assert v1 in candidates
+
+    def test_normal_request_demotes_expired_vip_servers(self):
+        m = make_model("m", vip=3)
+        old = timezone.now() - timedelta(seconds=600)
+        expired = make_server(m.id, "http://v.example", vip=True, vip_cooldown=old)
+
+        # This call should trigger demotion even if is_vip_channel=False
+        candidates, served = ProxyService()._select_candidates("chat/completions", m, is_vip_channel=False)
+
+        expired.refresh_from_db()
+        assert expired.vip is False
+        assert expired.vip_cooldown is None
+        assert expired in candidates  # It should now be back in the normal pool
