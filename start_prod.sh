@@ -12,7 +12,7 @@ exec gunicorn router_project.wsgi:application \
   --bind 0.0.0.0:8001 \
   --bind "0.0.0.0:${VIP_PORT}" \
   --workers "${GUNICORN_WORKERS:-8}" \
-  --threads "${GUNICORN_THREADS:-32}" \
+  --threads "${GUNICORN_THREADS:-64}" \
   --worker-class gthread \
   --timeout "${GUNICORN_TIMEOUT:-960}" \
   --graceful-timeout "${GUNICORN_GRACEFUL_TIMEOUT:-1200}" \
