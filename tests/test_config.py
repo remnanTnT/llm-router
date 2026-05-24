@@ -5,8 +5,12 @@ def test_prefix_cache_threshold_env_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_ROUTER_CONFIG", str(tmp_path / "missing.yaml"))
     monkeypatch.setenv("PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD", "0.95")
     monkeypatch.setenv("PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD", "0.45")
+    monkeypatch.setenv("PREFIX_CACHE_MAX_PREFIX_CHARS", "4096")
+    monkeypatch.setenv("PREFIX_CACHE_BLOCK_CHARS", "64")
 
     config = load_config()
 
     assert config["prefix_cache"]["primary_match_threshold"] == "0.95"
     assert config["prefix_cache"]["secondary_match_threshold"] == "0.45"
+    assert config["prefix_cache"]["max_prefix_chars"] == 4096
+    assert config["prefix_cache"]["prefix_block_chars"] == 64

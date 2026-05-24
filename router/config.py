@@ -43,8 +43,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "prefix_cache": {
         "primary_match_threshold": 0.9,
         "secondary_match_threshold": 0.5,
-        "max_prefix_tokens": 200000,
-        "block_size": 512,
+        "max_prefix_chars": 1000000,
+        "prefix_block_chars": 8,
         "redis": {
             "host": "localhost",
             "port": 6379,
@@ -86,6 +86,7 @@ def load_config() -> dict[str, Any]:
         with config_path.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
     config = _deep_merge(DEFAULT_CONFIG, data)
+    prefix_cache = config.setdefault("prefix_cache", {})
 
     database = config.setdefault("database", {})
     for env_key, config_key in {
@@ -104,11 +105,22 @@ def load_config() -> dict[str, Any]:
         except (TypeError, ValueError):
             pass
     if "PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD" in os.environ:
-        config.setdefault("prefix_cache", {})["primary_match_threshold"] = os.environ["PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD"]
+        prefix_cache["primary_match_threshold"] = os.environ["PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD"]
     if "PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD" in os.environ:
-        config.setdefault("prefix_cache", {})["secondary_match_threshold"] = os.environ["PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD"]
+        prefix_cache["secondary_match_threshold"] = os.environ["PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD"]
+    if "PREFIX_CACHE_MAX_PREFIX_CHARS" in os.environ:
+        try:
+            prefix_cache["max_prefix_chars"] = int(os.environ["PREFIX_CACHE_MAX_PREFIX_CHARS"])
+        except (TypeError, ValueError):
+            pass
+    for env_key in ("PREFIX_CACHE_BLOCK_CHARS", "PREFIX_CACHE_PREFIX_BLOCK_CHARS"):
+        if env_key in os.environ:
+            try:
+                prefix_cache["prefix_block_chars"] = int(os.environ[env_key])
+            except (TypeError, ValueError):
+                pass
     
-    redis_cfg = config.setdefault("prefix_cache", {}).setdefault("redis", {})
+    redis_cfg = prefix_cache.setdefault("redis", {})
     if "REDIS_HOST" in os.environ:
         redis_cfg["host"] = os.environ["REDIS_HOST"]
     if "REDIS_PORT" in os.environ:
