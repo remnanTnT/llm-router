@@ -4,7 +4,7 @@
 
 - Python 3.11+
 - PostgreSQL with the existing schema already created (see [Database Schema](database_schema.md))
-- Redis server and CLI when using the Gunicorn start scripts' local prefix-cache Redis startup
+- Redis server for prefix-cache storage, or Docker/Podman for the start scripts' automatic Redis container fallback
 - Upstream OpenAI-compatible LLM service
 
 Python packages are listed in `requirements.txt`.
@@ -91,7 +91,7 @@ Defaults:
 - Workers: `1`
 - Threads per worker: `8`
 
-Both scripts start a local Redis instance when `REDIS_HOST` is local and the selected `REDIS_PORT` is not already serving Redis. Runtime files are written under `.runtime/redis-prod` or `.runtime/redis-test` by default.
+Both scripts start a local Redis instance when `REDIS_HOST` is local and the selected `REDIS_PORT` is not already serving Redis. They prefer an installed `redis-server`; when that is unavailable, they start a `redis:7-alpine` container with Docker or Podman. The first container start may need registry access to pull the image. Direct `redis-server` runtime files are written under `.runtime/redis-prod` or `.runtime/redis-test` by default.
 
 Both scripts use `config.yaml` by default and can be overridden with environment variables:
 
