@@ -98,6 +98,10 @@ class ProxyService:
         model_id = model.id if model else None
         if path.rstrip("/") == "models" and model_id is None:
             return self._candidates_for_request(path, None), False
+
+        if self.vip_service.is_vip_eligible(model):
+            ServerRepository.demote_expired_cooldowns(self.vip_service.cooldown_seconds, model.id)
+
         if is_vip_channel and self.vip_service.is_vip_eligible(model):
             return self.vip_service.select_candidates(model)
         return self._candidates_for_request(path, model_id, vip=False), False
