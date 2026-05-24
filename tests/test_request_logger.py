@@ -1,6 +1,15 @@
 from pathlib import Path
 
+import pytest
+
 from router.services import request_logger
+
+
+@pytest.fixture(autouse=True)
+def reset_request_logger_cache(monkeypatch):
+    monkeypatch.setattr(request_logger, "_LOG_PATH_CACHE", None)
+    monkeypatch.setattr(request_logger, "_LOG_DIR_CREATED", False)
+    request_logger._ERROR_DIR_CACHE.clear()
 
 
 def test_append_request_log_writes_line(tmp_path, monkeypatch):
