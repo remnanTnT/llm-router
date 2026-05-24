@@ -20,6 +20,145 @@ redis_cli_ping() {
   [[ "$response" == "PONG" ]]
 }
 
+container_runtime() {
+  if [[ -n "${REDIS_CONTAINER_RUNTIME:-}" ]]; then
+    command -v "$REDIS_CONTAINER_RUNTIME"
+    return
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    command -v docker
+    return
+  fi
+
+  if command -v podman >/dev/null 2>&1; then
+    command -v podman
+  fi
+}
+
+container_exists() {
+  local runtime="$1"
+  local container_name="$2"
+
+  "$runtime" container inspect "$container_name" >/dev/null 2>&1
+}
+
+container_running() {
+  local runtime="$1"
+  local container_name="$2"
+  local running
+
+  running="$("$runtime" inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
+  [[ "$running" == "true" ]]
+}
+
+container_redis_cli_ping() {
+  local runtime="$1"
+  local container_name="$2"
+  local db="$3"
+  local password="${4:-}"
+  local response
+
+  if [[ -n "$password" ]]; then
+    response="$("$runtime" exec -e "REDISCLI_AUTH=$password" "$container_name" redis-cli -n "$db" ping 2>/dev/null || true)"
+  else
+    response="$("$runtime" exec "$container_name" redis-cli -n "$db" ping 2>/dev/null || true)"
+  fi
+
+  [[ "$response" == "PONG" ]]
+}
+
+wait_for_redis_ready() {
+  local instance_name="$1"
+  local host="$2"
+  local port="$3"
+  local db="$4"
+  local password="${5:-}"
+  local log_hint="${6:-Redis logs}"
+  local runtime="${7:-}"
+  local container_name="${8:-}"
+  local attempts
+
+  for attempts in {1..30}; do
+    if redis_cli_ping "$host" "$port" "$db" "$password"; then
+      return 0
+    fi
+    if [[ -n "$runtime" && -n "$container_name" ]] && container_redis_cli_ping "$runtime" "$container_name" "$db" "$password"; then
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  echo "Redis for ${instance_name} did not become ready at ${host}:${port}. See ${log_hint}." >&2
+  exit 1
+}
+
+start_container_redis() {
+  local instance_name="$1"
+  local host="$2"
+  local port="$3"
+  local db="$4"
+  local password="${5:-}"
+  local runtime
+  local container_name
+  local image
+
+  runtime="$(container_runtime || true)"
+  if [[ -z "$runtime" ]]; then
+    echo "redis-server was not found, and neither docker nor podman is available." >&2
+    echo "Install Redis, install Docker/Podman, or set REDIS_HOST/REDIS_PORT to an existing Redis service." >&2
+    exit 1
+  fi
+
+  case "$host" in
+    localhost|127.0.0.1)
+      ;;
+    ::1)
+      echo "Container Redis startup does not support REDIS_HOST=::1. Use REDIS_HOST=127.0.0.1 or install redis-server." >&2
+      exit 1
+      ;;
+  esac
+
+  container_name="${REDIS_CONTAINER_NAME:-llm-router-redis-${instance_name}-${port}}"
+  image="${REDIS_CONTAINER_IMAGE:-redis:7-alpine}"
+
+  if container_exists "$runtime" "$container_name"; then
+    if ! container_running "$runtime" "$container_name"; then
+      echo "Starting existing Redis container ${container_name}." >&2
+      if ! "$runtime" start "$container_name" >/dev/null; then
+        echo "Failed to start Redis container ${container_name}." >&2
+        exit 1
+      fi
+    else
+      echo "Redis container ${container_name} is already running." >&2
+    fi
+  else
+    echo "Starting Redis container ${container_name} at ${host}:${port}." >&2
+    local run_args=(
+      "$runtime"
+      run
+      -d
+      --name "$container_name"
+      -p "127.0.0.1:${port}:6379"
+      "$image"
+      redis-server
+      --save ""
+      --appendonly no
+    )
+
+    if [[ -n "$password" ]]; then
+      run_args+=(--requirepass "$password")
+    fi
+
+    if ! "${run_args[@]}" >/dev/null; then
+      echo "Failed to start Redis container ${container_name} with image ${image}." >&2
+      exit 1
+    fi
+  fi
+
+  wait_for_redis_ready "$instance_name" "$host" "$port" "$db" "$password" "container ${container_name} logs" "$runtime" "$container_name"
+}
+
 ensure_local_redis() {
   local instance_name="${1:?missing Redis instance name}"
   local host="${REDIS_HOST:-127.0.0.1}"
@@ -47,9 +186,8 @@ ensure_local_redis() {
   fi
 
   if ! command -v redis-server >/dev/null 2>&1; then
-    echo "redis-server is required to start local Redis for ${instance_name}." >&2
-    echo "Install Redis or set REDIS_HOST/REDIS_PORT to an existing Redis service." >&2
-    exit 1
+    start_container_redis "$instance_name" "$host" "$port" "$db" "$password"
+    return 0
   fi
 
   local runtime_dir="${REDIS_RUNTIME_DIR:-$(pwd)/.runtime/redis-${instance_name}}"
@@ -104,15 +242,8 @@ ensure_local_redis() {
   "${redis_args[@]}"
 
   if [[ "$have_redis_cli" == "1" ]]; then
-    local attempts
-    for attempts in {1..20}; do
-      if redis_cli_ping "$host" "$port" "$db" "$password"; then
-        return 0
-      fi
-      sleep 0.2
-    done
-    echo "Redis for ${instance_name} did not become ready at ${host}:${port}. See ${log_file}." >&2
-    exit 1
+    wait_for_redis_ready "$instance_name" "$host" "$port" "$db" "$password" "$log_file"
+    return 0
   fi
 
   if [[ -f "$pid_file" ]]; then
