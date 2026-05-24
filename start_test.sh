@@ -7,6 +7,12 @@ export DB_HOST="${DB_HOST:-localhost}"
 export DB_PORT="${DB_PORT:-5432}"
 export LLM_ROUTER_CONFIG="${LLM_ROUTER_CONFIG:-$(pwd)/config.yaml}"
 export VIP_PORT="${VIP_PORT:-9001}"
+export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
+export REDIS_PORT="${REDIS_PORT:-6380}"
+export REDIS_DB="${REDIS_DB:-0}"
+
+source ./scripts/local_redis.sh
+ensure_local_redis test
 
 exec gunicorn router_project.wsgi:application \
   --bind 0.0.0.0:9000 \

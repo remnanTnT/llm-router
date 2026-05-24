@@ -85,8 +85,8 @@ A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one 
 
 - **Configuration**
   - `config.yaml` (overridable via `LLM_ROUTER_CONFIG`) deep-merged onto built-in defaults
-  - Env-var overrides for DB, `VIP_PORT`, prefix-cache thresholds, Django secret/debug, test SQLite mode
-  - `start_prod.sh` (ports 8001+8008, 8×32) and `start_test.sh` (ports 9000+9001, 1×8) gunicorn launchers
+  - Env-var overrides for DB, Redis, `VIP_PORT`, prefix-cache thresholds, Django secret/debug, test SQLite mode
+  - `start_prod.sh` (ports 8001+8008, Redis 6379, 8×64) and `start_test.sh` (ports 9000+9001, Redis 6380, 1×8) gunicorn launchers
   - WSGI entrypoint validates DB connectivity on boot; `ClientDisconnectMiddleware` registered globally
 
 - **Tests**

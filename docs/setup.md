@@ -4,6 +4,7 @@
 
 - Python 3.11+
 - PostgreSQL with the existing schema already created (see [Database Schema](database_schema.md))
+- Redis server and CLI when using the Gunicorn start scripts' local prefix-cache Redis startup
 - Upstream OpenAI-compatible LLM service
 
 Python packages are listed in `requirements.txt`.
@@ -67,10 +68,12 @@ Production start script:
 Defaults:
 
 - HTTP port: `8001`
+- VIP port: `8008`
+- Redis port: `6379`
 - Database host: `localhost`
 - Database port: `5431`
 - Workers: `8`
-- Threads per worker: `32`
+- Threads per worker: `64`
 
 Test start script:
 
@@ -81,16 +84,21 @@ Test start script:
 Defaults:
 
 - HTTP port: `9000`
+- VIP port: `9001`
+- Redis port: `6380`
 - Database host: `localhost`
 - Database port: `5432`
 - Workers: `1`
 - Threads per worker: `8`
+
+Both scripts start a local Redis instance when `REDIS_HOST` is local and the selected `REDIS_PORT` is not already serving Redis. Runtime files are written under `.runtime/redis-prod` or `.runtime/redis-test` by default.
 
 Both scripts use `config.yaml` by default and can be overridden with environment variables:
 
 ```bash
 DB_HOST=127.0.0.1 \
 DB_PORT=5433 \
+REDIS_PORT=6381 \
 LLM_ROUTER_CONFIG=/path/to/config.yaml \
 GUNICORN_WORKERS=4 \
 GUNICORN_THREADS=16 \
@@ -103,7 +111,7 @@ Equivalent production Gunicorn command:
 gunicorn router_project.wsgi:application \
   --bind 0.0.0.0:8001 \
   --workers 8 \
-  --threads 32 \
+  --threads 64 \
   --worker-class gthread \
   --timeout 960 \
   --graceful-timeout 1200 \
