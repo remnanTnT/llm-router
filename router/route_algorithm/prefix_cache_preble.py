@@ -89,13 +89,12 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         available_by_id = {server.id: server for server in available}
         
         # 1. Generate prefix hashes for all blocks
-        prefixes = self._build_prefixes(request_chars)
+        prefix_data = self._get_prefix_hashes(request_chars)
         
-        if not prefixes:
+        if not prefix_data:
             return self._choose_least_loaded(available)
 
-        prefix_hashes = [self._hash_prefix(p) for p in prefixes]
-        redis_keys = [f"{self._cache_key_namespace}:{model_key}:{h}" for h in prefix_hashes]
+        redis_keys = [f"{self._cache_key_namespace}:{model_key}:{h}" for h, _ in prefix_data]
 
         # 2. MGET from Redis
         try:
@@ -121,7 +120,8 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
                 request_id = data.get("request_id")
                 servers_data = data.get("servers", {})
                 
-                match_ratio = len(prefixes[i]) / len(request_chars)
+                _, prefix_len = prefix_data[i]
+                match_ratio = prefix_len / len(request_chars)
                 found_valid_server_for_ratio = False
                 
                 valid_servers_in_this_prefix = []
@@ -187,15 +187,14 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         expiry_ts = time.time() + cache_time
 
         # Generate hashes for blocks and full request
-        prefixes_to_save = self._build_prefixes(request_chars)
+        prefix_data = self._get_prefix_hashes(request_chars)
 
-        if not prefixes_to_save:
+        if not prefix_data:
             return
 
         try:
             pipe = self._redis_client.pipeline()
-            for p in prefixes_to_save:
-                h = self._hash_prefix(p)
+            for h, _ in prefix_data:
                 key = f"{self._cache_key_namespace}:{model_key}:{h}"
                 data = {
                     "request_id": context.request_id,
@@ -206,16 +205,27 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         except Exception as e:
             logger.error("[PrefixCachePreble] Redis SET failed: %s", e)
 
-    def _build_prefixes(self, prefix_chars: tuple[str, ...]) -> list[tuple[str, ...]]:
-        prefixes = []
-        for i in range(self.prefix_block_chars, len(prefix_chars) + 1, self.prefix_block_chars):
-            prefixes.append(prefix_chars[:i])
-        if len(prefix_chars) % self.prefix_block_chars != 0:
-            prefixes.append(prefix_chars)
-        return prefixes
-
-    def _hash_prefix(self, prefix_chars: tuple[str, ...]) -> str:
-        return hashlib.sha256("".join(prefix_chars).encode("utf-8")).hexdigest()
+    def _get_prefix_hashes(self, text: str) -> list[tuple[str, int]]:
+        results = []
+        h = hashlib.sha256()
+        block_size = self.prefix_block_chars
+        for i in range(0, len(text), block_size):
+            block = text[i : i + block_size]
+            if not block:
+                break
+            h.update(block.encode("utf-8"))
+            results.append((h.hexdigest(), i + len(block)))
+        
+        # Ensure we always include the full text if not already included by block alignment
+        if len(text) % block_size != 0:
+            # This is slightly tricky with incremental hashing if we already updated it.
+            # But the loop above already handles it!
+            # If text length is 10 and block is 8:
+            # i=0: block = text[0:8], i+len(block) = 8
+            # i=8: block = text[8:10], i+len(block) = 10
+            # So the full text IS included.
+            pass
+        return results
 
     def _choose_least_loaded(self, available: Sequence[Any]) -> Any | None:
         if not available:
@@ -233,11 +243,11 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         least_loaded = [server for server in available if processing_counts.get(server.base_url, 0) == min_count]
         return random.choice(least_loaded)
 
-    def _prefix_chars_from_body(self, body: bytes) -> tuple[str, ...]:
+    def _prefix_chars_from_body(self, body: bytes) -> str:
         text = self._text_from_body(body)
-        return tuple(text[: self.max_prefix_chars])
+        return text[: self.max_prefix_chars]
 
-    def _tokens_from_body(self, body: bytes) -> tuple[str, ...]:
+    def _tokens_from_body(self, body: bytes) -> str:
         return self._prefix_chars_from_body(body)
 
     @staticmethod
