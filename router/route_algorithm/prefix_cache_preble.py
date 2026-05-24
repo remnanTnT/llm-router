@@ -23,21 +23,30 @@ logger = logging.getLogger(__name__)
 class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
     _redis_client: redis.Redis | None = None
     _client_lock = threading.Lock()
+    _cache_key_namespace = "prefix_chars"
 
     def __init__(
         self,
         count_provider: Callable[[list[str]], dict[str, int]] | None = None,
         primary_match_threshold: float | None = None,
         secondary_match_threshold: float | None = None,
-        max_prefix_tokens: int | None = None,
-        block_size: int | None = None,
+        max_prefix_chars: int | None = None,
+        prefix_block_chars: int | None = None,
     ):
         super().__init__(count_provider)
         prefix_config = APP_CONFIG.get("prefix_cache", {})
         self.primary_match_threshold = self._float_setting(primary_match_threshold, prefix_config.get("primary_match_threshold"), 0.9)
         self.secondary_match_threshold = self._float_setting(secondary_match_threshold, prefix_config.get("secondary_match_threshold"), 0.5)
-        self.max_prefix_tokens = self._int_setting(max_prefix_tokens, prefix_config.get("max_prefix_tokens"), 200000)
-        self.block_size = self._int_setting(block_size, prefix_config.get("block_size"), 512)
+        self.max_prefix_chars = self._positive_int_setting(
+            max_prefix_chars,
+            prefix_config.get("max_prefix_chars"),
+            1000000,
+        )
+        self.prefix_block_chars = self._positive_int_setting(
+            prefix_block_chars,
+            prefix_config.get("prefix_block_chars"),
+            8,
+        )
         self._ensure_redis()
 
     def _ensure_redis(self):
@@ -70,8 +79,8 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         if not available:
             return None
 
-        request_tokens = self._tokens_from_body(context.body)
-        if not request_tokens or self._redis_client is None:
+        request_chars = self._prefix_chars_from_body(context.body)
+        if not request_chars or self._redis_client is None:
             context.prefix_cache = 0.0
             context.last_match = None
             return self._choose_least_loaded(available)
@@ -80,17 +89,13 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         available_by_id = {server.id: server for server in available}
         
         # 1. Generate prefix hashes for all blocks
-        prefixes = []
-        for i in range(self.block_size, len(request_tokens) + 1, self.block_size):
-            prefixes.append(request_tokens[:i])
-        if len(request_tokens) % self.block_size != 0:
-            prefixes.append(request_tokens)
+        prefixes = self._build_prefixes(request_chars)
         
         if not prefixes:
             return self._choose_least_loaded(available)
 
-        prefix_hashes = [self._hash_tokens(p) for p in prefixes]
-        redis_keys = [f"prefix:{model_key}:{h}" for h in prefix_hashes]
+        prefix_hashes = [self._hash_prefix(p) for p in prefixes]
+        redis_keys = [f"{self._cache_key_namespace}:{model_key}:{h}" for h in prefix_hashes]
 
         # 2. MGET from Redis
         try:
@@ -116,7 +121,7 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
                 request_id = data.get("request_id")
                 servers_data = data.get("servers", {})
                 
-                match_ratio = len(prefixes[i]) / len(request_tokens)
+                match_ratio = len(prefixes[i]) / len(request_chars)
                 found_valid_server_for_ratio = False
                 
                 valid_servers_in_this_prefix = []
@@ -172,8 +177,8 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
     def on_response(self, server: Any, context: ServerSelectionContext, status_code: int) -> None:
         if not 200 <= status_code < 300 or self._redis_client is None:
             return
-        request_tokens = self._tokens_from_body(context.body)
-        if not request_tokens:
+        request_chars = self._prefix_chars_from_body(context.body)
+        if not request_chars:
             return
 
         model_key = context.model_name or str(context.model_id or "")
@@ -182,11 +187,7 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         expiry_ts = time.time() + cache_time
 
         # Generate hashes for blocks and full request
-        prefixes_to_save = []
-        for i in range(self.block_size, len(request_tokens) + 1, self.block_size):
-            prefixes_to_save.append(request_tokens[:i])
-        if len(request_tokens) % self.block_size != 0:
-            prefixes_to_save.append(request_tokens)
+        prefixes_to_save = self._build_prefixes(request_chars)
 
         if not prefixes_to_save:
             return
@@ -194,29 +195,27 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         try:
             pipe = self._redis_client.pipeline()
             for p in prefixes_to_save:
-                h = self._hash_tokens(p)
-                key = f"prefix:{model_key}:{h}"
-                
-                # We want to add this server to the list of servers for this prefix
-                # To be efficient and atomic, we'll try to use a Lua script or just a simple GET-then-SET
-                # Given we have 32 threads, GET-then-SET might have races, but they are benign (just multiple servers).
-                # However, the user said "make sure THIS server can serve", implying sticky.
-                # Let's use a simple SET with the current server as the primary, but we can merge if needed.
-                # Actually, to keep it simple and fulfill "save the whole request":
+                h = self._hash_prefix(p)
+                key = f"{self._cache_key_namespace}:{model_key}:{h}"
                 data = {
                     "request_id": context.request_id,
                     "servers": {str(server.id): expiry_ts}
                 }
-                # We overwrite or merge? Overwriting with the LATEST success is a valid strategy for "sticky" cache.
-                # But merging is better for "least connection" among multiple good servers.
-                # For now, let's overwrite to ensure the "latest" successful server is remembered.
                 pipe.set(key, json.dumps(data), ex=cache_time)
             pipe.execute()
         except Exception as e:
             logger.error("[PrefixCachePreble] Redis SET failed: %s", e)
 
-    def _hash_tokens(self, tokens: tuple[str, ...]) -> str:
-        return hashlib.sha256(" ".join(tokens).encode("utf-8")).hexdigest()
+    def _build_prefixes(self, prefix_chars: tuple[str, ...]) -> list[tuple[str, ...]]:
+        prefixes = []
+        for i in range(self.prefix_block_chars, len(prefix_chars) + 1, self.prefix_block_chars):
+            prefixes.append(prefix_chars[:i])
+        if len(prefix_chars) % self.prefix_block_chars != 0:
+            prefixes.append(prefix_chars)
+        return prefixes
+
+    def _hash_prefix(self, prefix_chars: tuple[str, ...]) -> str:
+        return hashlib.sha256("".join(prefix_chars).encode("utf-8")).hexdigest()
 
     def _choose_least_loaded(self, available: Sequence[Any]) -> Any | None:
         if not available:
@@ -234,12 +233,12 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         least_loaded = [server for server in available if processing_counts.get(server.base_url, 0) == min_count]
         return random.choice(least_loaded)
 
-    def _tokens_from_body(self, body: bytes) -> tuple[str, ...]:
+    def _prefix_chars_from_body(self, body: bytes) -> tuple[str, ...]:
         text = self._text_from_body(body)
-        tokens = text.split()
-        if not tokens and text:
-            tokens = list(text)
-        return tuple(tokens[: self.max_prefix_tokens])
+        return tuple(text[: self.max_prefix_chars])
+
+    def _tokens_from_body(self, body: bytes) -> tuple[str, ...]:
+        return self._prefix_chars_from_body(body)
 
     @staticmethod
     def _text_from_body(body: bytes) -> str:
@@ -311,3 +310,8 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             except (TypeError, ValueError):
                 continue
         return default
+
+    @staticmethod
+    def _positive_int_setting(*values) -> int:
+        setting = PrefixCachePrebleServerChooser._int_setting(*values)
+        return max(setting, 1)

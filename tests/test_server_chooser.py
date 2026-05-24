@@ -97,7 +97,7 @@ def test_least_connection_chooser_returns_none_when_all_attempted():
 def test_prefix_cache_high_match_chooses_least_loaded_cached_server():
     chooser = PrefixCachePrebleServerChooser(
         lambda targets: {"http://10.0.0.1:8000": 3, "http://10.0.0.2:8000": 1, "http://10.0.0.3:8000": 0},
-        block_size=1
+        prefix_block_chars=1,
     )
     candidates = [
         make_server(1, "http://10.0.0.1:8000"),
@@ -112,9 +112,6 @@ def test_prefix_cache_high_match_chooses_least_loaded_cached_server():
     selected = chooser.choose(candidates, context, set())
 
     assert selected.id == 2
-    # The prompt text will have "user: 0 1 2 ... 98 new" (100 tokens if using split)
-    # The original test expected 100/101. 
-    # With block_size=1, it should find the 99 tokens match.
     assert context.prefix_cache > 0.9
     assert context.last_match == 102
 
@@ -122,7 +119,7 @@ def test_prefix_cache_high_match_chooses_least_loaded_cached_server():
 def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
     chooser = PrefixCachePrebleServerChooser(
         lambda targets: {"http://10.0.0.1:8000": 0, "http://10.0.0.2:8000": 1, "http://10.0.0.3:8000": 0},
-        block_size=1
+        prefix_block_chars=1,
     )
     candidates = [
         make_server(1, "http://10.0.0.1:8000"),
@@ -131,7 +128,7 @@ def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
     ]
     chooser.on_response(candidates[1], make_context(make_body([str(i) for i in range(60)]), request_id=201), 200)
 
-    context = make_context(make_body([str(i) for i in range(60)] + [f"new-{i}" for i in range(40)]))
+    context = make_context(make_body([str(i) for i in range(60)] + [f"new-{i}" for i in range(20)]))
     selected = chooser.choose(candidates, context, set())
 
     assert selected.id == 2
@@ -140,7 +137,7 @@ def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
 
 
 def test_prefix_cache_last_match_tracks_best_match_request_id():
-    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, block_size=1)
+    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, prefix_block_chars=1)
     candidates = [make_server(1, "http://10.0.0.1:8000")]
     chooser.on_response(candidates[0], make_context(make_body(["a", "b", "x"]), request_id=301), 200)
     chooser.on_response(candidates[0], make_context(make_body(["a", "b", "c", "d"]), request_id=302), 200)
@@ -153,7 +150,7 @@ def test_prefix_cache_last_match_tracks_best_match_request_id():
 
 
 def test_prefix_cache_last_match_is_none_without_common_prefix():
-    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, block_size=1)
+    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, prefix_block_chars=1)
     candidates = [make_server(1, "http://10.0.0.1:8000")]
     chooser.on_response(candidates[0], make_context(b"hello world", request_id=401), 200)
 
@@ -165,7 +162,7 @@ def test_prefix_cache_last_match_is_none_without_common_prefix():
 
 
 def test_prefix_cache_response_hook_only_marks_successful_responses():
-    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, block_size=1)
+    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, prefix_block_chars=1)
     server = make_server(1, "http://10.0.0.1:8000")
     context = make_context(make_body(["hello", "world"]))
 
@@ -178,10 +175,25 @@ def test_prefix_cache_response_hook_only_marks_successful_responses():
     assert pipe.set.call_count > 0
 
 
-def test_prefix_cache_max_prefix_tokens_default():
-    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, max_prefix_tokens=10)
+def test_prefix_cache_max_prefix_chars_default():
+    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, max_prefix_chars=10)
 
-    assert chooser.max_prefix_tokens == 10
+    assert chooser.max_prefix_chars == 10
+
+
+def test_prefix_cache_chunks_chinese_text_by_character():
+    chooser = PrefixCachePrebleServerChooser(lambda targets: {}, prefix_block_chars=2)
+    prefix_chars = chooser._prefix_chars_from_body(
+        json.dumps({"prompt": "你好，世界。再"}, ensure_ascii=False).encode("utf-8")
+    )
+
+    assert prefix_chars == tuple("你好，世界。再")
+    assert ["".join(prefix) for prefix in chooser._build_prefixes(prefix_chars)] == [
+        "你好",
+        "你好，世",
+        "你好，世界。",
+        "你好，世界。再",
+    ]
 
 
 def test_prefix_cache_uses_renamed_threshold_arguments():

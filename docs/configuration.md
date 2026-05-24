@@ -38,8 +38,8 @@ load_balancer:
 prefix_cache:
   primary_match_threshold: 0.9
   secondary_match_threshold: 0.5
-  max_prefix_tokens: 200000
-  block_size: 512
+  max_prefix_chars: 1000000
+  prefix_block_chars: 8
   redis:
     host: localhost
     port: 6379
@@ -86,6 +86,8 @@ export DJANGO_SECRET_KEY='change-me'
 export DJANGO_DEBUG=0
 export PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD=0.9
 export PREFIX_CACHE_SECONDARY_MATCH_THRESHOLD=0.5
+export PREFIX_CACHE_MAX_PREFIX_CHARS=1000000
+export PREFIX_CACHE_BLOCK_CHARS=8
 export REDIS_HOST=127.0.0.1
 export REDIS_PORT=6379
 export REDIS_DB=0
@@ -94,3 +96,5 @@ export USE_SQLITE_FOR_TESTS=1
 ```
 
 `start_prod.sh` defaults to Redis port `6379`; `start_test.sh` defaults to Redis port `6380`. Both scripts start local Redis automatically only for local Redis hosts.
+
+Prefix cache blocks are measured in Python Unicode characters, not LLM tokenizer tokens. This keeps matching language-neutral for Chinese and other no-whitespace prompts. The final partial block is also stored so short prompts and exact full-prefix matches are cacheable.

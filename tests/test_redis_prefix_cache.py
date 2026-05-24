@@ -28,7 +28,7 @@ def test_redis_prefix_cache_flow(mock_redis):
     # Initialize chooser
     chooser = PrefixCachePrebleServerChooser(
         count_provider=lambda targets: {t: 0 for t in targets},
-        block_size=2
+        prefix_block_chars=4,
     )
     
     candidates = [
@@ -36,7 +36,7 @@ def test_redis_prefix_cache_flow(mock_redis):
         MockServer(2, "http://server2")
     ]
     
-    body = b'{"prompt": "hello world how are you"}'
+    body = b'{"prompt": "abcdefghij"}'
     context = ServerSelectionContext(
         request_id=1,
         ip_id=1,
@@ -52,8 +52,7 @@ def test_redis_prefix_cache_flow(mock_redis):
     chooser.on_response(candidates[0], context, 200)
     
     # Verify Redis SET/pipeline calls
-    # tokens are ["hello", "world", "how", "are", "you"]
-    # blocks of 2: ["hello", "world"], ["hello", "world", "how", "are"], ["hello", "world", "how", "are", "you"]
+    # character blocks: "abcd", "abcdefgh", "abcdefghij"
     assert mock_redis.pipeline.called
     pipe = mock_redis.pipeline.return_value
     assert pipe.set.call_count == 3
@@ -87,6 +86,6 @@ def test_redis_prefix_cache_flow(mock_redis):
     selected = chooser.choose(candidates, new_context, set())
     
     assert selected.id == 1
-    # Match ratio for 4 tokens out of 5 = 0.8
+    # Match ratio for 8 characters out of 10 = 0.8
     assert new_context.prefix_cache == 0.8
     assert new_context.last_match == 1
