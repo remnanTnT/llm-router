@@ -12,7 +12,7 @@ python manage.py test init_db
 
 ## `check_db_schema`
 
-Diffs the live PostgreSQL schema against Django model definitions: missing tables/columns, extra columns, default mismatches, NULL/NOT NULL mismatches, type mismatches, and single-column unique-constraint mismatches.
+Diffs the live PostgreSQL schema against Django model definitions: missing tables/columns, extra columns, default mismatches, NULL/NOT NULL mismatches, type mismatches, single-column unique-constraint mismatches, and missing model-declared indexes.
 
 ```bash
 python manage.py test check_db_schema --dry-run

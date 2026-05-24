@@ -26,12 +26,6 @@ from router.utils.headers import filter_request_headers, filter_response_headers
 from router.utils.sse import parse_sse_usage
 
 
-_SHARED_SESSION = requests.Session()
-_DEFAULT_ADAPTER = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=500)
-_SHARED_SESSION.mount("http://", _DEFAULT_ADAPTER)
-_SHARED_SESSION.mount("https://", _DEFAULT_ADAPTER)
-
-
 class ProxyService:
     def __init__(self, chooser=None):
         proxy_config = APP_CONFIG.get("proxy", {})
@@ -265,7 +259,7 @@ class ProxyService:
         req_headers = {**headers}
         if server.csb_token:
             req_headers["csb-token"] = server.csb_token
-        return _SHARED_SESSION.request(
+        return requests.request(
             django_request.method,
             upstream_url,
             headers=req_headers,

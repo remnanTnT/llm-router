@@ -4,7 +4,7 @@ from django.db import connection
 
 
 class Command(BaseCommand):
-    help = "Check required table columns against Django model definitions."
+    help = "Check required table columns, constraints, and indexes against Django model definitions."
 
     def add_arguments(self, parser):
         parser.add_argument("--fix", action="store_true", help="Drop extra columns and column defaults that are not defined by the models.")
@@ -29,7 +29,7 @@ class Command(BaseCommand):
 
             if dry_run:
                 self._apply_fixes(drift, models, dry_run=True)
-                break
+                raise SystemExit(1)
 
             self._apply_fixes(drift, models, dry_run=False)
             pass_count += 1
@@ -112,11 +112,10 @@ class Command(BaseCommand):
         for table, indexes in drift["missing_indexes"].items():
             model = {m._meta.db_table: m for m in models}[table]
             for index in indexes:
-                with connection.schema_editor() as schema_editor:
-                    sql = str(index.create_sql(model, schema_editor))
-                    self.stdout.write(sql)
-                    if not dry_run:
-                        schema_editor.execute(sql)
+                sql = self._create_index_sql(model, index)
+                self.stdout.write(sql)
+                if not dry_run:
+                    self._execute_index_sql(sql)
 
     def _inspect_schema(self, models):
         drift = {
@@ -413,6 +412,33 @@ class Command(BaseCommand):
     def _alter_type_sql(self, table, column, expected_type):
         quote_name = connection.ops.quote_name
         return f"ALTER TABLE {quote_name(table)} ALTER COLUMN {quote_name(column)} TYPE {expected_type};"
+
+    def _create_index_sql(self, model, index):
+        with connection.schema_editor() as schema_editor:
+            sql = str(index.create_sql(model, schema_editor))
+        sql = sql.rstrip(";")
+        if connection.vendor == "postgresql":
+            if sql.startswith("CREATE INDEX "):
+                sql = sql.replace("CREATE INDEX ", "CREATE INDEX CONCURRENTLY IF NOT EXISTS ", 1)
+            elif sql.startswith("CREATE UNIQUE INDEX "):
+                sql = sql.replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ", 1)
+        return sql + ";"
+
+    def _execute_index_sql(self, sql):
+        if connection.vendor != "postgresql" or " CONCURRENTLY " not in sql:
+            with connection.schema_editor() as schema_editor:
+                schema_editor.execute(sql)
+            return
+
+        old_autocommit = connection.get_autocommit()
+        if not old_autocommit:
+            connection.set_autocommit(True)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
+        finally:
+            if not old_autocommit:
+                connection.set_autocommit(False)
 
     def _write_drift(self, drift):
         if drift["missing_tables"]:
