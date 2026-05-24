@@ -59,7 +59,7 @@ ALTER TABLE models ADD COLUMN deprecation VARCHAR(500) NULL;
 
 ## Request-Table Indexes
 
-Create the request-table indexes from `sql/requests_indexes.sql` on PostgreSQL. The processing partial indexes are required for the LLM request hot path because the `requests` table can be very large while active `processing` rows are small. Run these outside a transaction because they use `CREATE INDEX CONCURRENTLY`. `check_db_schema` reports missing model-declared indexes so the dry run can catch drift before production traffic depends on them; `--fix` also creates missing model indexes with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` on PostgreSQL.
+The required request-table indexes are declared in `RequestRecord._meta.indexes`. The processing partial indexes are required for the LLM request hot path because the `requests` table can be very large while active `processing` rows are small. `check_db_schema` reports missing model-declared indexes so the dry run can catch drift before production traffic depends on them; `--fix` creates missing model indexes with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` on PostgreSQL.
 
 ## Load-Balancer Columns
 
