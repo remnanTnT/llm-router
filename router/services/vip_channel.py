@@ -95,10 +95,10 @@ class VIPChannelService:
             )
             return
 
-        if len(vip_set) == 1:
+        if len(active) == 1:
             return
 
-        projected = len(vip_set) - 1
+        projected = len(active) - 1
         if total_load / projected < threshold:
             ServerRepository.mark_vip_cooldown(self._least_workload(active))
 
