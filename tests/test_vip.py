@@ -373,6 +373,20 @@ class TestVIPScaleDown:
         v1.refresh_from_db()
         assert v1.vip_cooldown is None
 
+    def test_keeps_last_active_vip_when_others_cooling(self):
+        m = make_model("m", vip=3)
+        v1 = make_server(m.id, "http://v1.example", vip=True)
+        v2 = make_server(m.id, "http://v2.example", vip=True, vip_cooldown=timezone.now())
+        for _ in range(2):
+            add_vip_processing(m.id)
+
+        VIPChannelService().maybe_scale_down(m)
+
+        v1.refresh_from_db()
+        v2.refresh_from_db()
+        assert v1.vip_cooldown is None
+        assert v2.vip_cooldown is not None
+
 
 # -------- spike-then-stop drain cycle --------
 
