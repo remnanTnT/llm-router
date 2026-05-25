@@ -174,8 +174,8 @@ class ProxyService:
                     retry = False
                     self._log_attempt(record.id, attempts, server, "status", retry, status=status_code)
                     
-                    # Mark unhealthy if server returns >= 500 (but skip for 504 timeouts)
-                    if status_code >= 500 and status_code != 504:
+                    # Mark unhealthy if server returns >= 500
+                    if status_code >= 500:
                         self._mark_unhealthy(server)
 
                     self._maybe_log_multi_server_route(record.id, attempted_server_ids, server.id)

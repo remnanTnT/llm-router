@@ -153,4 +153,60 @@ class TestCircuitBreakerInlineProbe:
         server.refresh_from_db()
         assert server.circuit_state == "closed"
         assert server.consecutive_failures == 0
+
+    def test_half_open_server_stays_routable_without_restamp(self):
+        """Already-half_open servers stay routable and don't re-stamp last_state_change_at."""
+        original_timestamp = timezone.now() - timedelta(seconds=60)
+        server = Server.objects.create(
+            base_url="http://probe6.example",
+            is_online=True,
+            circuit_state="half_open",
+            consecutive_failures=3,
+            last_state_change_at=original_timestamp,
+            cooldown_seconds=30,
+        )
+
+        online = ServerRepository.list_all_online()
+        assert server in online
+
+        server.refresh_from_db()
+        assert server.circuit_state == "half_open"
+        # Timestamp must NOT be re-stamped (this was the bug)
+        assert abs((server.last_state_change_at - original_timestamp).total_seconds()) < 1
+
+    def test_vip_server_demoted_when_circuit_opens(self):
+        """When a VIP server's circuit opens, it is demoted to normal."""
+        server = Server.objects.create(
+            base_url="http://vip-fail.example",
+            is_online=True,
+            vip=True,
+            vip_cooldown=timezone.now(),
+        )
+        cb = CircuitBreakerService()
+
+        cb.record_failure(server)
+        cb.record_failure(server)
+        cb.record_failure(server)
+
+        server.refresh_from_db()
+        assert server.circuit_state == "open"
+        assert server.vip is False
+        assert server.vip_cooldown is None
+
+    def test_non_vip_server_unaffected_by_demote_logic(self):
+        """Normal servers stay vip=False when circuit opens (no spurious update)."""
+        server = Server.objects.create(
+            base_url="http://normal-fail.example",
+            is_online=True,
+            vip=False,
+        )
+        cb = CircuitBreakerService()
+
+        cb.record_failure(server)
+        cb.record_failure(server)
+        cb.record_failure(server)
+
+        server.refresh_from_db()
+        assert server.circuit_state == "open"
+        assert server.vip is False
         assert server.cooldown_seconds == 30  # reset to base

@@ -43,10 +43,12 @@ class ServerRepository:
         for s in servers:
             if s.circuit_state == "closed":
                 routable.append(s)
-            elif s.circuit_state in ("open", "half_open"):
+            elif s.circuit_state == "open":
                 if s.last_state_change_at and (now - s.last_state_change_at).total_seconds() >= s.cooldown_seconds:
                     ServerRepository.transition_to_half_open(s)
                     routable.append(s)
+            elif s.circuit_state == "half_open":
+                routable.append(s)
         return routable
 
     @staticmethod
@@ -85,14 +87,21 @@ class ServerRepository:
                     base_cooldown_seconds * (2 ** (server.consecutive_failures - failure_threshold)),
                     max_cooldown_seconds,
                 )
-            Server.objects.filter(id=server.id).update(
-                circuit_state="open",
-                last_state_change_at=now,
-                cooldown_seconds=new_cooldown,
-            )
+            update_fields = {
+                "circuit_state": "open",
+                "last_state_change_at": now,
+                "cooldown_seconds": new_cooldown,
+            }
+            if server.vip:
+                update_fields["vip"] = False
+                update_fields["vip_cooldown"] = None
+            Server.objects.filter(id=server.id).update(**update_fields)
             server.circuit_state = "open"
             server.last_state_change_at = now
             server.cooldown_seconds = new_cooldown
+            if server.vip:
+                server.vip = False
+                server.vip_cooldown = None
 
     @staticmethod
     def record_success(server: Server, base_cooldown_seconds: int) -> None:
