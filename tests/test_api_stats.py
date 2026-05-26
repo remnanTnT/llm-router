@@ -160,18 +160,15 @@ def test_boxplot_filters_over_limit_truncates_top_one_percent_and_interpolates()
     )
 
     assert response.status_code == 200
-    point = response.json()["model_data"]["model-a"][0]
-    assert point == {
-        "time": "2026-01-01 00:00:00",
-        "min": 100.0,
-        "q1": 175.0,
-        "median": 250.0,
-        "q3": 325.0,
-        "max": 400.0,
-        "sample_count": 4,
-        "raw_count": 6,
-        "over_limit_count": 1,
-        "over_limit_ratio": 0.1667,
+    body = response.json()
+    assert body["start_time"] == "2026-01-01 00:00:00"
+    assert body["end_time"] == "2026-01-01 01:00:00"
+    assert body["time_labels"] == ["00:00"]
+    assert body["model_data"]["model-a"] == {
+        "time_labels": ["00:00"],
+        "boxplot_data": [[100.0, 175.0, 250.0, 325.0, 400.0]],
+        "over_threshold_count": [1],
+        "over_threshold_ratio": [0.1667],
     }
 
 

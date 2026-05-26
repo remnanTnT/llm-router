@@ -110,9 +110,9 @@ def percentile_linear(values: list[float], percentile: float) -> float | None:
 
 def latency_boxplot(raw_values: list[int]) -> dict:
     raw_count = len(raw_values)
-    over_limit_count = sum(1 for value in raw_values if value > 890000)
+    over_threshold_count = sum(1 for value in raw_values if value > 890000)
     clean_values = sorted(value for value in raw_values if value <= 890000)
-    over_limit_ratio = round(over_limit_count / raw_count, 4) if raw_count else 0
+    over_threshold_ratio = round(over_threshold_count / raw_count, 4) if raw_count else 0
 
     if not clean_values:
         return {
@@ -122,9 +122,8 @@ def latency_boxplot(raw_values: list[int]) -> dict:
             "q3": None,
             "max": None,
             "sample_count": 0,
-            "raw_count": raw_count,
-            "over_limit_count": over_limit_count,
-            "over_limit_ratio": over_limit_ratio,
+            "over_threshold_count": over_threshold_count,
+            "over_threshold_ratio": over_threshold_ratio,
         }
 
     remove_count = math.ceil(len(clean_values) * 0.01)
@@ -138,7 +137,6 @@ def latency_boxplot(raw_values: list[int]) -> dict:
         "q3": percentile_linear(values, 0.75),
         "max": percentile_linear(values, 1),
         "sample_count": len(values),
-        "raw_count": raw_count,
-        "over_limit_count": over_limit_count,
-        "over_limit_ratio": over_limit_ratio,
+        "over_threshold_count": over_threshold_count,
+        "over_threshold_ratio": over_threshold_ratio,
     }

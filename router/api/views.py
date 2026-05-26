@@ -8,6 +8,8 @@ from django.views.decorators.http import require_http_methods
 
 from router.api.stats import (
     APIValidationError,
+    BEIJING_TZ,
+    TIME_FORMAT,
     bucket_expression,
     bucket_labels,
     bucket_start,
@@ -186,14 +188,39 @@ def model_latency_boxplot(request):
         grouped[(model.model_name, label)].append(row["latency"])
 
     model_data = {}
+    valid_labels = set()
     for model in selected_models:
-        points = []
+        time_labels = []
+        boxplot_data = []
+        over_threshold_count = []
+        over_threshold_ratio = []
         for label in labels:
             summary = latency_boxplot(grouped.get((model.model_name, label), []))
-            points.append({"time": label, **summary})
-        model_data[model.model_name] = points
+            if summary["sample_count"] == 0:
+                continue
+            valid_labels.add(label)
+            time_labels.append(_short_label(label, granularity))
+            boxplot_data.append([summary["min"], summary["q1"], summary["median"], summary["q3"], summary["max"]])
+            over_threshold_count.append(summary["over_threshold_count"])
+            over_threshold_ratio.append(summary["over_threshold_ratio"])
+        model_data[model.model_name] = {
+            "time_labels": time_labels,
+            "boxplot_data": boxplot_data,
+            "over_threshold_count": over_threshold_count,
+            "over_threshold_ratio": over_threshold_ratio,
+        }
 
-    return JsonResponse({"code": 200, "time_labels": labels, "model_data": model_data})
+    root_time_labels = [_short_label(label, granularity) for label in labels if label in valid_labels]
+
+    return JsonResponse(
+        {
+            "code": 200,
+            "start_time": start.astimezone(BEIJING_TZ).strftime(TIME_FORMAT),
+            "end_time": end.astimezone(BEIJING_TZ).strftime(TIME_FORMAT),
+            "time_labels": root_time_labels,
+            "model_data": model_data,
+        }
+    )
 
 
 @require_http_methods(["GET"])
@@ -235,6 +262,12 @@ def _models_for_boxplot(model_names: str | None):
     if missing:
         return JsonResponse({"code": 404, "error": "model_names not found", "missing": missing}, status=404)
     return [models[name] for name in names]
+
+
+def _short_label(label: str, granularity: str) -> str:
+    if granularity == "hour":
+        return label[11:16]
+    return label
 
 
 def _average_latency_stats(start, end, model_id: int | None = None):
