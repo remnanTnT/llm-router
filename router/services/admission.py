@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass
 from typing import ClassVar
 
+from django.utils import timezone
+
 from router.config import APP_CONFIG
 from router.models import IP, Model
 from router.repositories.departments import DepartmentRepository
@@ -74,6 +76,13 @@ class AdmissionService:
             self._last_cleanup[model.id] = now
 
         limit = max(1, math.ceil(model.concurrent_limit * (ip.concurrent_multiplier or 1.0)))
+
+        # Triple concurrency 23:00–08:00 Beijing time every day, or all day Sunday
+        beijing_time = timezone.localtime()
+        wd = beijing_time.weekday()  # Monday=0 ... Sunday=6
+        if beijing_time.hour >= 23 or beijing_time.hour < 8 or wd == 6:
+            limit *= 3
+
         current = RequestRepository.count_processing(ip.id, model.id)
 
         if current >= limit:
