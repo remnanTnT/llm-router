@@ -432,6 +432,53 @@ def upsert_mr_live_review(request):
         return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
 
 
+@require_http_methods(["GET"])
+def mr_live_review_stats(request):
+    from router.repositories.mr_live_review import MrLiveReviewRepository
+
+    project_name = request.GET.get("project_name")
+    if not project_name or not project_name.strip():
+        return _bad_request("project_name is required")
+
+    rows = MrLiveReviewRepository.count_by_target_branch(project_name.strip())
+
+    branches = []
+    total_valid = total_invalid = total_no_reply = 0
+    for row in rows:
+        valid = row["valid"]
+        invalid = row["invalid"]
+        no_reply = row["no_reply"]
+        total_valid += valid
+        total_invalid += invalid
+        total_no_reply += no_reply
+        branches.append(
+            {
+                "target_branch": row["target_branch"],
+                "valid": valid,
+                "invalid": invalid,
+                "no_reply": no_reply,
+                "accept_rate": _accept_rate(valid, invalid),
+            }
+        )
+
+    total = {
+        "target_branch": "总计",
+        "valid": total_valid,
+        "invalid": total_invalid,
+        "no_reply": total_no_reply,
+        "accept_rate": _accept_rate(total_valid, total_invalid),
+    }
+
+    return JsonResponse({"code": 200, "data": branches, "total": total})
+
+
+def _accept_rate(valid: int, invalid: int) -> float:
+    denominator = valid + invalid
+    if denominator == 0:
+        return 0.0
+    return round(valid / denominator, 4)
+
+
 @require_http_methods(["POST"])
 def create_codehub_review(request):
     import json
