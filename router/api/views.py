@@ -479,6 +479,28 @@ def _accept_rate(valid: int, invalid: int) -> float:
     return round(valid / denominator, 4)
 
 
+@require_http_methods(["GET"])
+def mr_live_review_list(request):
+    from router.repositories.mr_live_review import TYPE_FILTERS, MrLiveReviewRepository
+
+    project_name = request.GET.get("project_name")
+    if not project_name or not project_name.strip():
+        return _bad_request("project_name is required")
+
+    target_branch = request.GET.get("target_branch")
+    if not target_branch or not target_branch.strip():
+        return _bad_request("target_branch is required")
+
+    review_type = request.GET.get("type")
+    if review_type not in TYPE_FILTERS:
+        return _bad_request("type must be one of: valid, invalid, no_reply")
+
+    rows = MrLiveReviewRepository.list_by_type(
+        project_name.strip(), target_branch.strip(), review_type
+    )
+    return JsonResponse({"code": 200, "data": rows})
+
+
 @require_http_methods(["POST"])
 def create_codehub_review(request):
     import json
