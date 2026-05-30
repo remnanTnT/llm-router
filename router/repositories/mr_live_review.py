@@ -1,8 +1,30 @@
 from __future__ import annotations
 
+import re
+
 from django.db.models import Count, Q
 
 from router.models import MrLiveReview
+
+# Matches the date/time head of an ISO-ish timestamp, ignoring any
+# fractional seconds and timezone suffix (which may be non-standard, e.g.
+# ``+8:00``). Both ``T`` and space separators are accepted.
+_CREATED_AT_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})")
+
+
+def _format_created_at(value):
+    """Normalize a stored timestamp string to ``YYYY-MM-DD HH:MM:SS``.
+
+    ``created_at`` is stored as a free-form string such as
+    ``2026-05-28T15:10:02.093+8:00``. Return the plain date/time portion;
+    if the value does not match the expected shape, return it unchanged.
+    """
+    if not value:
+        return value
+    match = _CREATED_AT_RE.search(str(value))
+    if not match:
+        return value
+    return f"{match.group(1)} {match.group(2)}"
 
 # Maps the public ``type`` query value to the model filter that selects it.
 TYPE_FILTERS = {
@@ -47,7 +69,13 @@ class MrLiveReviewRepository:
             .values(*DETAIL_FIELDS.keys())
             .order_by("-created_at")
         )
-        return [{out: row[field] for field, out in DETAIL_FIELDS.items()} for row in rows]
+        return [
+            {
+                out: (_format_created_at(row[field]) if field == "created_at" else row[field])
+                for field, out in DETAIL_FIELDS.items()
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def count_by_target_branch(project_name: str) -> list[dict]:
