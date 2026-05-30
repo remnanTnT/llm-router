@@ -53,29 +53,42 @@ DETAIL_FIELDS = {
 
 class MrLiveReviewRepository:
     @staticmethod
-    def list_by_type(project_name: str, target_branch: str, review_type: str) -> list[dict]:
-        """Return review detail rows for a project/branch filtered by type.
+    def list_by_type(
+        project_name: str,
+        target_branch: str,
+        review_type: str,
+        page: int = 1,
+        page_size: int = 10,
+    ) -> tuple[list[dict], int]:
+        """Return a page of review detail rows plus the total row count.
 
         ``review_type`` is one of ``valid``, ``invalid`` or ``no_reply`` (see
-        :data:`TYPE_FILTERS`). Each row exposes the fields in
-        :data:`DETAIL_FIELDS`, keyed by their public output name.
+        :data:`TYPE_FILTERS`). Rows are ordered by ``created_at`` descending
+        (newest first). Each row exposes the fields in :data:`DETAIL_FIELDS`,
+        keyed by their public output name.
+
+        ``page`` is 1-based and ``page_size`` is the number of rows per page.
+        Returns ``(rows, total)`` where ``total`` is the unpaginated count.
         """
-        rows = (
+        queryset = (
             MrLiveReview.objects.filter(
                 project_name=project_name,
                 target_branch=target_branch,
             )
             .filter(TYPE_FILTERS[review_type])
-            .values(*DETAIL_FIELDS.keys())
             .order_by("-created_at")
         )
-        return [
+        total = queryset.count()
+        offset = (page - 1) * page_size
+        rows = queryset.values(*DETAIL_FIELDS.keys())[offset : offset + page_size]
+        data = [
             {
                 out: (_format_created_at(row[field]) if field == "created_at" else row[field])
                 for field, out in DETAIL_FIELDS.items()
             }
             for row in rows
         ]
+        return data, total
 
     @staticmethod
     def count_by_target_branch(project_name: str) -> list[dict]:

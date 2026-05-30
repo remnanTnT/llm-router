@@ -110,3 +110,49 @@ def test_mr_live_review_list_invalid_type():
     )
     assert response.status_code == 400
     assert "type must be one of" in response.json()["error"]
+
+
+@pytest.mark.django_db
+def test_mr_live_review_list_pagination():
+    # 25 valid rows with increasing timestamps so we can assert ordering.
+    for i in range(25):
+        MrLiveReview.objects.create(
+            **_base_payload(
+                discussion_id=f"v{i}",
+                is_valid_ai_comment=True,
+                rejected=False,
+                created_at=f"2023-01-{i + 1:02d}T00:00:00Z",
+            )
+        )
+
+    client = Client()
+    params = {"project_name": "proj_a", "target_branch": "main", "type": "valid"}
+
+    # Default page size is 10, newest first.
+    body = client.get("/api/mr_live_review/list", params).json()
+    assert body["total"] == 25
+    assert body["page"] == 1
+    assert body["page_size"] == 10
+    assert len(body["data"]) == 10
+    assert body["data"][0]["created_at"] == "2023-01-25T00:00:00Z"
+
+    # Custom page_size and a middle page.
+    body = client.get("/api/mr_live_review/list", {**params, "page": 2, "page_size": 20}).json()
+    assert body["total"] == 25
+    assert len(body["data"]) == 5
+    assert body["data"][0]["created_at"] == "2023-01-05T00:00:00Z"
+
+    # Page beyond the data returns an empty list, not an error.
+    body = client.get("/api/mr_live_review/list", {**params, "page": 99}).json()
+    assert body["data"] == []
+    assert body["total"] == 25
+
+
+@pytest.mark.django_db
+def test_mr_live_review_list_invalid_pagination():
+    client = Client()
+    params = {"project_name": "proj_a", "target_branch": "main", "type": "valid"}
+    assert client.get("/api/mr_live_review/list", {**params, "page": 0}).status_code == 400
+    assert client.get("/api/mr_live_review/list", {**params, "page_size": 0}).status_code == 400
+    assert client.get("/api/mr_live_review/list", {**params, "page_size": 1000}).status_code == 400
+    assert client.get("/api/mr_live_review/list", {**params, "page": "abc"}).status_code == 400

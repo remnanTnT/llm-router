@@ -495,10 +495,22 @@ def mr_live_review_list(request):
     if review_type not in TYPE_FILTERS:
         return _bad_request("type must be one of: valid, invalid, no_reply")
 
-    rows = MrLiveReviewRepository.list_by_type(
-        project_name.strip(), target_branch.strip(), review_type
+    page, page_size, error = _parse_pagination(request)
+    if error:
+        return _bad_request(error)
+
+    rows, total = MrLiveReviewRepository.list_by_type(
+        project_name.strip(), target_branch.strip(), review_type, page, page_size
     )
-    return JsonResponse({"code": 200, "data": rows})
+    return JsonResponse(
+        {
+            "code": 200,
+            "data": rows,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 @require_http_methods(["POST"])
@@ -534,3 +546,27 @@ def create_codehub_review(request):
 
 def _bad_request(message: str):
     return JsonResponse({"code": 400, "error": message}, status=400)
+
+
+def _parse_pagination(request, default_page_size: int = 10, max_page_size: int = 100):
+    """Parse ``page`` / ``page_size`` query params.
+
+    Returns ``(page, page_size, error)``. ``page`` defaults to 1 and
+    ``page_size`` to ``default_page_size`` (capped at ``max_page_size``).
+    On invalid input ``error`` is a message string and the page values are
+    undefined.
+    """
+    try:
+        page = int(request.GET.get("page", 1))
+        page_size = int(request.GET.get("page_size", default_page_size))
+    except (TypeError, ValueError):
+        return None, None, "page and page_size must be integers"
+
+    if page < 1:
+        return None, None, "page must be >= 1"
+    if page_size < 1:
+        return None, None, "page_size must be >= 1"
+    if page_size > max_page_size:
+        return None, None, f"page_size must be <= {max_page_size}"
+
+    return page, page_size, None
