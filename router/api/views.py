@@ -557,6 +557,41 @@ def mr_live_review_list(request):
     )
 
 
+@require_http_methods(["GET"])
+def mr_live_review_list_by_confidence(request):
+    from router.repositories.mr_live_review import TYPE_FILTERS, MrLiveReviewRepository
+
+    project_name = request.GET.get("project_name")
+    if not project_name or not project_name.strip():
+        return _bad_request("project_name is required")
+
+    # confidence_score can be empty, None, or a specific value
+    confidence_score = request.GET.get("confidence_score")
+    if confidence_score is not None:
+        confidence_score = confidence_score.strip() if confidence_score.strip() else None
+
+    review_type = request.GET.get("type")
+    if review_type not in TYPE_FILTERS:
+        return _bad_request("type must be one of: valid, invalid, no_reply")
+
+    page, page_size, error = _parse_pagination(request)
+    if error:
+        return _bad_request(error)
+
+    rows, total = MrLiveReviewRepository.list_by_type_and_confidence(
+        project_name.strip(), confidence_score, review_type, page, page_size
+    )
+    return JsonResponse(
+        {
+            "code": 200,
+            "data": rows,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
+
+
 @require_http_methods(["POST"])
 def create_codehub_review(request):
     import json

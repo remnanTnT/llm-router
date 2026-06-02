@@ -128,3 +128,47 @@ class MrLiveReviewRepository:
             )
             .order_by("confidence_score")
         )
+
+    @staticmethod
+    def list_by_type_and_confidence(
+        project_name: str,
+        confidence_score: str | None,
+        review_type: str,
+        page: int = 1,
+        page_size: int = 10,
+    ) -> tuple[list[dict], int]:
+        """Return a page of review detail rows plus the total row count.
+
+        Similar to ``list_by_type`` but filters by ``confidence_score`` instead
+        of ``target_branch``. ``confidence_score`` can be ``None`` or empty string
+        to filter records where confidence_score is null or empty.
+
+        ``review_type`` is one of ``valid``, ``invalid`` or ``no_reply`` (see
+        :data:`TYPE_FILTERS`). Rows are ordered by ``created_at`` descending
+        (newest first). Each row exposes the fields in :data:`DETAIL_FIELDS`,
+        keyed by their public output name.
+
+        ``page`` is 1-based and ``page_size`` is the number of rows per page.
+        Returns ``(rows, total)`` where ``total`` is the unpaginated count.
+        """
+        queryset = MrLiveReview.objects.filter(project_name=project_name)
+
+        # Handle confidence_score filtering, including None and empty string cases
+        if confidence_score is None or confidence_score == "":
+            queryset = queryset.filter(Q(confidence_score__isnull=True) | Q(confidence_score=""))
+        else:
+            queryset = queryset.filter(confidence_score=confidence_score)
+
+        queryset = queryset.filter(TYPE_FILTERS[review_type]).order_by("-created_at")
+
+        total = queryset.count()
+        offset = (page - 1) * page_size
+        rows = queryset.values(*DETAIL_FIELDS.keys())[offset : offset + page_size]
+        data = [
+            {
+                out: (_format_created_at(row[field]) if field == "created_at" else row[field])
+                for field, out in DETAIL_FIELDS.items()
+            }
+            for row in rows
+        ]
+        return data, total
