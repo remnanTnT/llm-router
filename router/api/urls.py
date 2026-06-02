@@ -21,6 +21,7 @@ urlpatterns = [
     path("add_server", views.add_server),
     path("mr_live_review", views.upsert_mr_live_review),
     path("mr_live_review/stats", views.mr_live_review_stats),
+    path("mr_live_review/stats_by_confidence", views.mr_live_review_stats_by_confidence),
     path("mr_live_review/list", views.mr_live_review_list),
     path("codehub_review", views.create_codehub_review),
 ]

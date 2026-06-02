@@ -109,3 +109,22 @@ class MrLiveReviewRepository:
             )
             .order_by("target_branch")
         )
+
+    @staticmethod
+    def count_by_confidence_score(project_name: str) -> list[dict]:
+        """Aggregate review counts per confidence_score for a given project.
+
+        Each row contains the confidence_score and the counts of valid
+        (is_valid_ai_comment), invalid (rejected) and no_reply
+        (neither valid nor rejected) reviews.
+        """
+        return list(
+            MrLiveReview.objects.filter(project_name=project_name)
+            .values("confidence_score")
+            .annotate(
+                valid=Count("id", filter=Q(is_valid_ai_comment=True)),
+                invalid=Count("id", filter=Q(rejected=True)),
+                no_reply=Count("id", filter=Q(is_valid_ai_comment=False, rejected=False)),
+            )
+            .order_by("confidence_score")
+        )

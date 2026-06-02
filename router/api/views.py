@@ -480,6 +480,50 @@ def _accept_rate(valid: int, invalid: int) -> float:
 
 
 @require_http_methods(["GET"])
+def mr_live_review_stats_by_confidence(request):
+    from router.repositories.mr_live_review import MrLiveReviewRepository
+
+    project_name = request.GET.get("project_name")
+    if not project_name or not project_name.strip():
+        return _bad_request("project_name is required")
+
+    rows = MrLiveReviewRepository.count_by_confidence_score(project_name.strip())
+
+    scores = []
+    total_valid = total_invalid = total_no_reply = 0
+    for row in rows:
+        valid = row["valid"]
+        invalid = row["invalid"]
+        no_reply = row["no_reply"]
+        total_valid += valid
+        total_invalid += invalid
+        total_no_reply += no_reply
+        total_count = valid + invalid + no_reply
+        scores.append(
+            {
+                "confidence_score": row["confidence_score"],
+                "valid": valid,
+                "invalid": invalid,
+                "no_reply": no_reply,
+                "total": total_count,
+                "accept_rate": _accept_rate(valid, invalid),
+            }
+        )
+
+    total_count = total_valid + total_invalid + total_no_reply
+    total = {
+        "confidence_score": "总计",
+        "valid": total_valid,
+        "invalid": total_invalid,
+        "no_reply": total_no_reply,
+        "total": total_count,
+        "accept_rate": _accept_rate(total_valid, total_invalid),
+    }
+
+    return JsonResponse({"code": 200, "data": scores, "total": total})
+
+
+@require_http_methods(["GET"])
 def mr_live_review_list(request):
     from router.repositories.mr_live_review import TYPE_FILTERS, MrLiveReviewRepository
 

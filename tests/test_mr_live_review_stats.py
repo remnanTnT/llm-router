@@ -103,3 +103,75 @@ def test_mr_live_review_stats_empty():
         "no_reply": 0,
         "accept_rate": 0.0,
     }
+
+
+@pytest.mark.django_db
+def test_mr_live_review_stats_by_confidence_aggregation():
+    # confidence_score 0.9: 2 valid, 1 invalid, 1 no_reply
+    MrLiveReview.objects.create(**_base_payload(discussion_id="c1", confidence_score="0.9", is_valid_ai_comment=True, rejected=False))
+    MrLiveReview.objects.create(**_base_payload(discussion_id="c2", confidence_score="0.9", is_valid_ai_comment=True, rejected=False))
+    MrLiveReview.objects.create(**_base_payload(discussion_id="c3", confidence_score="0.9", is_valid_ai_comment=False, rejected=True))
+    MrLiveReview.objects.create(**_base_payload(discussion_id="c4", confidence_score="0.9", is_valid_ai_comment=False, rejected=False))
+    # confidence_score 0.8: 1 valid, 0 invalid, 1 no_reply
+    MrLiveReview.objects.create(**_base_payload(discussion_id="c5", confidence_score="0.8", is_valid_ai_comment=True, rejected=False))
+    MrLiveReview.objects.create(**_base_payload(discussion_id="c6", confidence_score="0.8", is_valid_ai_comment=False, rejected=False))
+    # another project, should be ignored
+    MrLiveReview.objects.create(**_base_payload(discussion_id="c7", project_name="proj_b", confidence_score="0.9", is_valid_ai_comment=True, rejected=False))
+
+    client = Client()
+    response = client.get("/api/mr_live_review/stats_by_confidence", {"project_name": "proj_a"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 200
+
+    data = {row["confidence_score"]: row for row in body["data"]}
+    assert data["0.8"] == {
+        "confidence_score": "0.8",
+        "valid": 1,
+        "invalid": 0,
+        "no_reply": 1,
+        "total": 2,
+        "accept_rate": 1.0,
+    }
+    assert data["0.9"] == {
+        "confidence_score": "0.9",
+        "valid": 2,
+        "invalid": 1,
+        "no_reply": 1,
+        "total": 4,
+        "accept_rate": round(2 / 3, 4),
+    }
+
+    assert body["total"] == {
+        "confidence_score": "总计",
+        "valid": 3,
+        "invalid": 1,
+        "no_reply": 2,
+        "total": 6,
+        "accept_rate": round(3 / 4, 4),
+    }
+
+
+@pytest.mark.django_db
+def test_mr_live_review_stats_by_confidence_missing_project_name():
+    client = Client()
+    response = client.get("/api/mr_live_review/stats_by_confidence")
+    assert response.status_code == 400
+    assert "project_name is required" in response.json()["error"]
+
+
+@pytest.mark.django_db
+def test_mr_live_review_stats_by_confidence_empty():
+    client = Client()
+    response = client.get("/api/mr_live_review/stats_by_confidence", {"project_name": "no_such_project"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"] == []
+    assert body["total"] == {
+        "confidence_score": "总计",
+        "valid": 0,
+        "invalid": 0,
+        "no_reply": 0,
+        "total": 0,
+        "accept_rate": 0.0,
+    }
