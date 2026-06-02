@@ -40,6 +40,7 @@ DETAIL_FIELDS = {
     "merge_url": "merge_url",
     "assignee": "assignee",
     "resolved_by_committer": "resolved_by_committer",
+    "diff_file": "diff_file",
     "severity_cn": "severity_cn",
     "code": "code",
     "comment": "comment",
