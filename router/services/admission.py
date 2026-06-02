@@ -63,19 +63,24 @@ class AdmissionService:
             )
         return AdmissionResult(True)
 
-    def check_concurrency(self, ip: IP, model: Model | None) -> AdmissionResult:
-        if not model or model.concurrent_limit is None:
+    def check_concurrency(self, ip: IP, model: Model | None, is_auto: bool = False) -> AdmissionResult:
+        if not model and not is_auto:
+            return AdmissionResult(True)
+        
+        limit_base = model.concurrent_limit if model else int(APP_CONFIG.get("router", {}).get("auto_concurrent_limit", 6))
+        if limit_base is None:
             return AdmissionResult(True)
 
-        # Throttled Auto-Cleanup: Guarantee that stale requests (zombies) are 
-        # cleared regularly without hitting the DB on every single request.
-        now = time.time()
-        last_run = self._last_cleanup.get(model.id, 0)
-        if now - last_run > self._cleanup_throttle_seconds:
-            RequestRepository.cleanup_stale(model_id=model.id, threshold_minutes=self.stale_minutes)
-            self._last_cleanup[model.id] = now
+        model_id = model.id if model else 0 # 0 for auto fallback tracking
 
-        limit = max(1, math.ceil(model.concurrent_limit * (ip.concurrent_multiplier or 1.0)))
+        # Throttled Auto-Cleanup
+        now = time.time()
+        last_run = self._last_cleanup.get(model_id, 0)
+        if now - last_run > self._cleanup_throttle_seconds:
+            RequestRepository.cleanup_stale(model_id=model_id, threshold_minutes=self.stale_minutes)
+            self._last_cleanup[model_id] = now
+
+        limit = max(1, math.ceil(limit_base * (ip.concurrent_multiplier or 1.0)))
 
         # Triple concurrency 23:00–08:00 Beijing time every day, or all day Sunday
         beijing_time = timezone.localtime()
@@ -83,14 +88,12 @@ class AdmissionService:
         if beijing_time.hour >= 23 or beijing_time.hour < 8 or wd == 6:
             limit *= 3
 
-        current = RequestRepository.count_processing(ip.id, model.id)
+        current = RequestRepository.count_processing(ip.id, model_id)
 
         if current >= limit:
-            # Final fallback: If we are still at the limit, do a targeted cleanup for this specific IP.
-            # This ensures the user is never blocked by their own stale requests.
-            cleaned = RequestRepository.cleanup_stale(model_id=model.id, threshold_minutes=self.stale_minutes, ip_id=ip.id)
+            cleaned = RequestRepository.cleanup_stale(model_id=model_id, threshold_minutes=self.stale_minutes, ip_id=ip.id)
             if cleaned > 0:
-                current = RequestRepository.count_processing(ip.id, model.id)
+                current = RequestRepository.count_processing(ip.id, model_id)
 
         if current >= limit:
             return AdmissionResult(

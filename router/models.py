@@ -52,6 +52,8 @@ class Model(models.Model):
     max_tokens = models.IntegerField(default=20480)
     vip = models.IntegerField(blank=True, null=True)
     deprecation = models.CharField(max_length=500, blank=True, null=True)
+    is_routing_model = models.BooleanField(default=False)
+    max_context_window = models.IntegerField(default=204800)
 
     class Meta:
         managed = False
@@ -100,6 +102,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
     prefix_cache = models.FloatField(default=0.0)
     final_prefix_cache = models.IntegerField(default=0)
     last_match = models.BigIntegerField(blank=True, null=True)
+    router_result = models.CharField(max_length=100, blank=True, null=True)
 
     class Meta:
         managed = False

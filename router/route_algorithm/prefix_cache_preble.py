@@ -325,3 +325,51 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
     def _positive_int_setting(*values) -> int:
         setting = PrefixCachePrebleServerChooser._int_setting(*values)
         return max(setting, 1)
+
+    def get_all_model_prefix_ratios(self, body: bytes, model_names: list[str]) -> dict[str, float]:
+        request_chars = self._prefix_chars_from_body(body)
+        if not request_chars or self._redis_client is None or not model_names:
+            return {name: 0.0 for name in model_names}
+
+        prefix_data = self._get_prefix_hashes(request_chars)
+        if not prefix_data:
+            return {name: 0.0 for name in model_names}
+
+        # Multi-model batch fetch
+        results = {name: 0.0 for name in model_names}
+        all_keys = []
+        key_map = [] # list of (model_name, index_in_prefix_data)
+
+        for model_name in model_names:
+            for i, (h, _) in enumerate(prefix_data):
+                all_keys.append(f"{self._cache_key_namespace}:{model_name}:{h}")
+                key_map.append((model_name, i))
+
+        if not all_keys:
+            return results
+
+        try:
+            cached_values = self._redis_client.mget(all_keys)
+        except Exception as e:
+            logger.error("[PrefixCachePreble] Multi-model Redis MGET failed: %s", e)
+            return results
+
+        now_ts = time.time()
+        for i, val in enumerate(cached_values):
+            if not val:
+                continue
+            try:
+                data = json.loads(val)
+                servers_data = data.get("servers", {})
+                
+                # Check if at least one server is still valid
+                if any(now_ts < expiry_ts for expiry_ts in servers_data.values()):
+                    model_name, prefix_idx = key_map[i]
+                    _, prefix_len = prefix_data[prefix_idx]
+                    ratio = prefix_len / len(request_chars)
+                    if ratio > results[model_name]:
+                        results[model_name] = ratio
+            except Exception:
+                continue
+        
+        return results

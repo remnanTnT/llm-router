@@ -24,6 +24,14 @@ class ModelRepository:
         return list(Model.objects.all().order_by("id"))
 
     @staticmethod
+    def list_active_models() -> list[Model]:
+        return list(Model.objects.filter(deprecation__isnull=True, is_routing_model=False).order_by("id"))
+
+    @staticmethod
+    def get_routing_models() -> list[Model]:
+        return list(Model.objects.filter(is_routing_model=True).order_by("id"))
+
+    @staticmethod
     def get_by_names(model_names: list[str]) -> dict[str, Model]:
         return {model.model_name: model for model in Model.objects.filter(model_name__in=model_names)}
 

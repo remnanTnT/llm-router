@@ -85,7 +85,7 @@ def proxy(request, path: str):
             return error_response(max_token_check.status_code, message, max_token_check.error_type or "invalid_request_error")
 
         if not is_vip_channel:
-            concurrency = admission.check_concurrency(ip, model)
+            concurrency = admission.check_concurrency(ip, model, is_auto=(parsed.model_name == "auto"))
             if not concurrency.allowed:
                 message = concurrency.message or "concurrent limit exceeded"
                 RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 429, message)
