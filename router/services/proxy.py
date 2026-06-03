@@ -51,7 +51,7 @@ class ProxyService:
         self.vip_port = int(APP_CONFIG.get("server", {}).get("vip_port", 8008))
         self._router_system_prompt = None
 
-    def _get_auto_route_model(self, body: bytes, record: Any) -> tuple[Any, str | None]:
+    def _get_auto_route_model(self, body: bytes, record: Any, context: ServerSelectionContext) -> tuple[Any, str | None]:
         # 1. Get all active models
         active_models = ModelRepository.list_active_models()
         if not active_models:
@@ -76,13 +76,17 @@ class ProxyService:
             return self._get_default_model(), "no_routing_model"
 
         routing_servers = []
+        model_id_to_name = {rm.id: rm.model_name for rm in routing_models}
         for rm in routing_models:
             routing_servers.extend(ServerRepository.list_by_model_id(rm.id, vip=False))
         
         if not routing_servers:
             return self._get_default_model(), "no_routing_servers"
 
-        server = random.choice(routing_servers)
+        # Use chooser instead of random choice
+        server = self.chooser.choose(routing_servers, context, set())
+        if not server:
+            server = random.choice(routing_servers)
         
         if self._router_system_prompt is None:
             prompt_path = APP_CONFIG.get("router", {}).get("system_prompt_path", "router/assets/router_system_prompt.md")
@@ -93,8 +97,9 @@ class ProxyService:
                 self._router_system_prompt = "You are a router. Return one of: " + ", ".join(model_names)
 
         user_prompt = self.chooser._text_from_body(body)
+        routing_model_name = model_id_to_name.get(server.model_id, "router")
         payload = {
-            "model": "router",
+            "model": routing_model_name,
             "messages": [
                 {"role": "system", "content": self._router_system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -137,19 +142,36 @@ class ProxyService:
             ip_id, model.id if model else 0, parsed.stream, user_agent, user_ip_id=user_ip_id
         )
 
+        model_id = model.id if model else None
+        context = ServerSelectionContext(
+            request_id=record.id,
+            ip_id=ip_id,
+            model_id=model_id,
+            model_name=model.model_name if model else parsed.model_name,
+            path=path,
+            method=django_request.method,
+            is_stream=parsed.stream,
+            body=parsed.body,
+        )
+
         router_result = None
         if parsed.model_name == "auto":
-            model, router_result = self._get_auto_route_model(parsed.body, record)
+            model, router_result = self._get_auto_route_model(parsed.body, record, context)
             if model:
+                record.model_id = model.id
+                record.save(update_fields=["model_id"])
+                parsed.model_name = model.model_name
+                context.model_id = model.id
+                context.model_name = model.model_name
                 # Update body with actual model name if it was "auto"
                 try:
                     body_data = json.loads(parsed.body.decode("utf-8"))
                     body_data["model"] = model.model_name
                     parsed.body = json.dumps(body_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    context.body = parsed.body
                 except Exception:
                     pass
         
-        model_id = model.id if model else None
         candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel)
         if served_as_vip:
             record.user_ip_id = 2
@@ -177,7 +199,7 @@ class ProxyService:
             )
 
         return self._route_with_retry(
-            django_request, path, headers, parsed.body, record, context.model_name,
+            django_request, path, headers, parsed.body, record, parsed.model_name,
             user_agent, candidates, context, served_as_vip, model, parsed.stream
         )
 
@@ -261,10 +283,7 @@ class ProxyService:
                 self._increment_workload(server)
                 workload_handed_off = False
                 try:
-                    if is_stream:
-                        upstream = self._handle_stream(django_request, server, upstream_url, headers, body)
-                    else:
-                        upstream = self._handle_normal(django_request, server, upstream_url, headers, body, upstream_client)
+                    upstream = self._perform_request(django_request, server, upstream_url, headers, body, is_stream, upstream_client)
 
                     if not is_stream:
                         content = upstream.content
@@ -276,9 +295,7 @@ class ProxyService:
                     last_status = status_code
                     last_reason = reason
                     
-                    retry = False
-                    self._log_attempt(record.id, attempts, server, "status", retry, status=status_code)
-                    
+                    self._log_attempt(record.id, attempts, server, "status", False, status=status_code)
                     if status_code >= 500:
                         self._mark_unhealthy(server)
 
@@ -293,13 +310,7 @@ class ProxyService:
                         
                         fail_reason = self._extract_fail_reason(content, reason)
                         
-                        # Check for context window overflow
-                        is_context_overflow = False
-                        if status_code == 400 and model and model.max_context_window:
-                            if str(model.max_context_window) in fail_reason:
-                                is_context_overflow = True
-                        
-                        if is_context_overflow and model and model.model_name != "DeepSeek-V4-Flash":
+                        if self._check_context_overflow(status_code, model, fail_reason) and model.model_name != "DeepSeek-V4-Flash":
                             flash_model = ModelRepository.get_by_name("DeepSeek-V4-Flash")
                             if flash_model:
                                 append_request_log(record.id, f"Context overflow detected ({fail_reason}), switching to DeepSeek-V4-Flash")
@@ -307,17 +318,9 @@ class ProxyService:
                                 candidates, _ = self._select_candidates(path, model, served_as_vip)
                                 context.model_id = model.id
                                 context.model_name = model.model_name
-                                try:
-                                    body_data = json.loads(body.decode("utf-8"))
-                                    body_data["model"] = model.model_name
-                                    body = json.dumps(body_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-                                    context.body = body
-                                except Exception:
-                                    pass
-                                
+                                body = self._update_body_model(body, model.model_name)
+                                context.body = body
                                 if candidates:
-                                    # We DON'T clear attempted_server_ids here because we want to keep overall attempts limited,
-                                    # but we DO ensure the loop continues.
                                     continue 
 
                         RequestRepository.finish(record, status_code, fail_reason, 0, 0, target_pod_ip, model.id if model else None, attempt_count=attempts, router_result=getattr(context, "router_result", None))
@@ -587,3 +590,21 @@ class ProxyService:
             "response_body": resp_body_str[:5000],
         }, ensure_ascii=False)
         append_error_log(request_id, log_entry)
+
+    def _perform_request(self, django_request, server, upstream_url, headers, body, is_stream, upstream_client):
+        if is_stream:
+            return self._handle_stream(django_request, server, upstream_url, headers, body)
+        return self._handle_normal(django_request, server, upstream_url, headers, body, upstream_client)
+
+    def _check_context_overflow(self, status_code: int, model: Any, fail_reason: str) -> bool:
+        if status_code == 400 and model and model.max_context_window:
+            return str(model.max_context_window) in fail_reason
+        return False
+
+    def _update_body_model(self, body: bytes, model_name: str) -> bytes:
+        try:
+            body_data = json.loads(body.decode("utf-8"))
+            body_data["model"] = model_name
+            return json.dumps(body_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except Exception:
+            return body
