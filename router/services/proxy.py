@@ -52,25 +52,29 @@ class ProxyService:
         self._router_system_prompt = None
 
     def _get_auto_route_model(self, body: bytes, record: Any, context: ServerSelectionContext) -> tuple[Any, str | None]:
-        # 1. Get all active models
         active_models = ModelRepository.list_active_models()
         if not active_models:
             return None, None
         
         model_names = [m.model_name for m in active_models]
         
-        # 2. Check cache hit ratio
+        cached_model = self._check_cache_hit(body, active_models, model_names)
+        if cached_model:
+            return cached_model, "cache_hit"
+
+        return self._query_routing_llm(body, record, context, active_models, model_names)
+
+    def _check_cache_hit(self, body: bytes, active_models: list[Any], model_names: list[str]) -> Any | None:
         chooser = self.chooser
         if hasattr(chooser, "get_all_model_prefix_ratios"):
             ratios = chooser.get_all_model_prefix_ratios(body, model_names)
             if ratios:
-                best_model_name = max(ratios, key=ratios.get)
-                if ratios[best_model_name] > 0.9:
-                    best_model = next((m for m in active_models if m.model_name == best_model_name), None)
-                    if best_model:
-                        return best_model, "cache_hit"
+                best_name = max(ratios, key=ratios.get)
+                if ratios[best_name] > 0.9:
+                    return next((m for m in active_models if m.model_name == best_name), None)
+        return None
 
-        # 3. Call routing LLM
+    def _query_routing_llm(self, body: bytes, record: Any, context: ServerSelectionContext, active_models: list[Any], model_names: list[str]) -> tuple[Any, str | None]:
         routing_models = ModelRepository.get_routing_models()
         if not routing_models:
             return self._get_default_model(), "no_routing_model"
@@ -83,11 +87,37 @@ class ProxyService:
         if not routing_servers:
             return self._get_default_model(), "no_routing_servers"
 
-        # Use chooser instead of random choice
-        server = self.chooser.choose(routing_servers, context, set())
-        if not server:
-            server = random.choice(routing_servers)
+        server = self.chooser.choose(routing_servers, context, set()) or random.choice(routing_servers)
         
+        self._ensure_system_prompt(model_names)
+        user_prompt = self.chooser._text_from_body(body)
+        routing_model_name = model_id_to_name.get(server.model_id, "router")
+        
+        payload = {
+            "model": routing_model_name,
+            "messages": [{"role": "system", "content": self._router_system_prompt}, {"role": "user", "content": user_prompt}],
+            "stream": False
+        }
+
+        try:
+            url = self._build_url(server.base_url, "chat/completions", "")
+            headers = {"Content-Type": "application/json"}
+            if server.csb_token:
+                headers["csb-token"] = server.csb_token
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                for name in model_names:
+                    if name in result:
+                        matched = next((m for m in active_models if m.model_name == name), None)
+                        if matched:
+                            return matched, result
+        except Exception as e:
+            append_request_log(record.id, f"Routing LLM error: {str(e)}")
+
+        return self._get_default_model(), "fallback"
+
+    def _ensure_system_prompt(self, model_names: list[str]) -> None:
         if self._router_system_prompt is None:
             prompt_path = APP_CONFIG.get("router", {}).get("system_prompt_path", "router/assets/router_system_prompt.md")
             try:
@@ -95,40 +125,6 @@ class ProxyService:
                     self._router_system_prompt = f.read()
             except Exception:
                 self._router_system_prompt = "You are a router. Return one of: " + ", ".join(model_names)
-
-        user_prompt = self.chooser._text_from_body(body)
-        routing_model_name = model_id_to_name.get(server.model_id, "router")
-        payload = {
-            "model": routing_model_name,
-            "messages": [
-                {"role": "system", "content": self._router_system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "stream": False
-        }
-
-        try:
-            url = self._build_url(server.base_url, "chat/completions", "")
-            resp = requests.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json", "csb-token": server.csb_token} if server.csb_token else {"Content-Type": "application/json"},
-                timeout=10
-            )
-            if resp.status_code == 200:
-                result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                matched_model = None
-                for name in model_names:
-                    if name in result:
-                        matched_model = next((m for m in active_models if m.model_name == name), None)
-                        break
-                
-                if matched_model:
-                    return matched_model, result
-        except Exception as e:
-            append_request_log(record.id, f"Routing LLM error: {str(e)}")
-
-        return self._get_default_model(), "fallback"
 
     def _get_default_model(self) -> Any:
         name = APP_CONFIG.get("router", {}).get("fallback_model", "glm-5.1")
