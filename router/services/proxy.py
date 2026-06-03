@@ -143,7 +143,7 @@ class ProxyService:
             request_id=record.id,
             ip_id=ip_id,
             model_id=model_id,
-            model_name=model.model_name if model else parsed.model_name,
+            model_name=parsed.model_name,
             path=path,
             method=django_request.method,
             is_stream=parsed.stream,
@@ -173,26 +173,9 @@ class ProxyService:
             record.user_ip_id = 2
             record.save(update_fields=["user_ip_id"])
 
-        context = ServerSelectionContext(
-            request_id=record.id,
-            ip_id=ip_id,
-            model_id=model_id,
-            model_name=model.model_name if model else parsed.model_name,
-            path=path,
-            method=django_request.method,
-            is_stream=parsed.stream,
-            body=parsed.body,
-        )
         context.router_result = router_result
         if not candidates:
-            message = "no online upstream server available"
-            RequestRepository.finish(record, 503, message)
-            self._maybe_delay_opencode_failure(user_agent, 503)
-            return HttpResponse(
-                json.dumps(error_payload(message, "service_unavailable")),
-                status=503,
-                content_type="application/json",
-            )
+            return self._handle_no_candidates(record, user_agent)
 
         return self._route_with_retry(
             django_request, path, headers, parsed.body, record, parsed.model_name,
