@@ -57,10 +57,15 @@ def _parse_created_at_with_timezone(created_at_str: str) -> datetime | None:
     """Parse created_at string and convert to Beijing time if needed.
 
     Handles formats like "2026-05-28T15:10:02.093+8:00" or "2026-05-28 15:10:02".
-    Returns a datetime object in Beijing timezone (+08:00).
+    Returns a timezone-aware datetime object in Beijing timezone (+08:00).
     """
+    from zoneinfo import ZoneInfo
+    from django.utils import timezone
+
     if not created_at_str:
         return None
+
+    BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
     # Pattern to extract datetime and timezone
     # Matches: YYYY-MM-DD[T or space]HH:MM:SS[.microseconds][+/-HH:MM or +/-H:MM]
@@ -94,7 +99,8 @@ def _parse_created_at_with_timezone(created_at_str: str) -> datetime | None:
         offset_diff = beijing_offset - total_offset
         dt = dt + timedelta(hours=offset_diff)
 
-    return dt
+    # Make the datetime timezone-aware in Beijing timezone
+    return timezone.make_aware(dt, BEIJING_TZ)
 
 
 class MrLiveReviewRepository:

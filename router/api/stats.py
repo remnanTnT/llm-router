@@ -33,6 +33,49 @@ def parse_time_range(params) -> tuple[datetime, datetime]:
     return start, end
 
 
+def parse_beijing_date(value: str | None, field_name: str) -> datetime:
+    """Parse a date string in YYYY-MM-DD format and return a timezone-aware datetime.
+
+    For start dates, the time is set to 00:00:00.
+    For end dates, the time is set to 23:59:59.
+    """
+    if not value:
+        raise APIValidationError(f"{field_name} is required")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise APIValidationError(f"{field_name} must be YYYY-MM-DD") from exc
+    return parsed
+
+
+def parse_date_range(params) -> tuple[datetime, datetime]:
+    """Parse start_date and end_date parameters in YYYY-MM-DD format.
+
+    Returns timezone-aware datetime objects with:
+    - start_date at 00:00:00 Beijing time
+    - end_date at 23:59:59 Beijing time
+    """
+    start_date_str = params.get("start_date")
+    end_date_str = params.get("end_date")
+
+    start_date = parse_beijing_date(start_date_str, "start_date")
+    end_date = parse_beijing_date(end_date_str, "end_date")
+
+    if start_date > end_date:
+        raise APIValidationError("start_date must be earlier than or equal to end_date")
+
+    # Set start time to 00:00:00
+    start = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Set end time to 23:59:59
+    end = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    # Make timezone-aware in Beijing timezone
+    start = timezone.make_aware(start, BEIJING_TZ)
+    end = timezone.make_aware(end, BEIJING_TZ)
+
+    return start, end
+
+
 def choose_granularity(start: datetime, end: datetime) -> str:
     delta = end - start
     if delta.days < 2 or delta.total_seconds() <= 2 * 24 * 60 * 60:

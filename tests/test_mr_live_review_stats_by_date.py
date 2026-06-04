@@ -140,8 +140,8 @@ def test_stats_by_date_valid(sample_reviews):
             "stats": "valid",
             "target_branch": "main",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -164,8 +164,8 @@ def test_stats_by_date_invalid(sample_reviews):
             "stats": "invalid",
             "target_branch": "main",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -185,8 +185,8 @@ def test_stats_by_date_no_reply(sample_reviews):
             "stats": "no_reply",
             "target_branch": "main",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -206,8 +206,8 @@ def test_stats_by_date_total(sample_reviews):
             "stats": "total",
             "target_branch": "main",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -229,8 +229,8 @@ def test_stats_by_date_total_all_branches(sample_reviews):
             "stats": "total",
             "target_branch": "total",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -252,8 +252,8 @@ def test_stats_by_date_accept_rate(sample_reviews):
             "stats": "accept_rate",
             "target_branch": "main",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -273,8 +273,8 @@ def test_stats_by_date_missing_stats():
         {
             "target_branch": "main",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -292,8 +292,8 @@ def test_stats_by_date_invalid_stats():
             "stats": "invalid_stats_type",
             "target_branch": "main",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -310,8 +310,8 @@ def test_stats_by_date_missing_target_branch():
         {
             "stats": "valid",
             "project_name": "test_project",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 
@@ -328,8 +328,8 @@ def test_stats_by_date_missing_project_name():
         {
             "stats": "valid",
             "target_branch": "main",
-            "start_time": "2026-06-01 00:00:00",
-            "end_time": "2026-06-02 23:59:59",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
         },
     )
 

@@ -594,6 +594,7 @@ def mr_live_review_list_by_confidence(request):
 
 @require_http_methods(["GET"])
 def mr_live_review_stats_by_date(request):
+    from router.api.stats import parse_date_range
     from router.repositories.mr_live_review import MrLiveReviewRepository
 
     # Validate stats parameter
@@ -614,19 +615,19 @@ def mr_live_review_stats_by_date(request):
         return _bad_request("project_name is required")
     project_name = project_name.strip()
 
-    # Parse time range
-    parsed = _time_range_or_error(request)
-    if isinstance(parsed, JsonResponse):
-        return parsed
-    start_time, end_time = parsed
+    # Parse date range (YYYY-MM-DD format)
+    try:
+        start_date, end_date = parse_date_range(request.GET)
+    except APIValidationError as exc:
+        return _bad_request(str(exc))
 
     # Handle accept_rate separately
     if stats == "accept_rate":
         valid_data = MrLiveReviewRepository.count_by_date(
-            project_name, target_branch, "valid", start_time, end_time
+            project_name, target_branch, "valid", start_date, end_date
         )
         invalid_data = MrLiveReviewRepository.count_by_date(
-            project_name, target_branch, "invalid", start_time, end_time
+            project_name, target_branch, "invalid", start_date, end_date
         )
 
         # Merge data and calculate accept_rate
@@ -645,7 +646,7 @@ def mr_live_review_stats_by_date(request):
 
     # For other stats types
     data = MrLiveReviewRepository.count_by_date(
-        project_name, target_branch, stats, start_time, end_time
+        project_name, target_branch, stats, start_date, end_date
     )
 
     return JsonResponse({"code": 200, "data": data})
