@@ -592,6 +592,65 @@ def mr_live_review_list_by_confidence(request):
     )
 
 
+@require_http_methods(["GET"])
+def mr_live_review_stats_by_date(request):
+    from router.repositories.mr_live_review import MrLiveReviewRepository
+
+    # Validate stats parameter
+    stats = request.GET.get("stats")
+    valid_stats = ["valid", "invalid", "no_reply", "total", "accept_rate"]
+    if not stats or stats not in valid_stats:
+        return _bad_request(f"stats must be one of: {', '.join(valid_stats)}")
+
+    # Validate target_branch parameter
+    target_branch = request.GET.get("target_branch")
+    if not target_branch or not target_branch.strip():
+        return _bad_request("target_branch is required")
+    target_branch = target_branch.strip()
+
+    # Validate project_name parameter
+    project_name = request.GET.get("project_name")
+    if not project_name or not project_name.strip():
+        return _bad_request("project_name is required")
+    project_name = project_name.strip()
+
+    # Parse time range
+    parsed = _time_range_or_error(request)
+    if isinstance(parsed, JsonResponse):
+        return parsed
+    start_time, end_time = parsed
+
+    # Handle accept_rate separately
+    if stats == "accept_rate":
+        valid_data = MrLiveReviewRepository.count_by_date(
+            project_name, target_branch, "valid", start_time, end_time
+        )
+        invalid_data = MrLiveReviewRepository.count_by_date(
+            project_name, target_branch, "invalid", start_time, end_time
+        )
+
+        # Merge data and calculate accept_rate
+        valid_dict = {item["date"]: item["count"] for item in valid_data}
+        invalid_dict = {item["date"]: item["count"] for item in invalid_data}
+
+        all_dates = sorted(set(valid_dict.keys()) | set(invalid_dict.keys()))
+        result = []
+        for date in all_dates:
+            valid_count = valid_dict.get(date, 0)
+            invalid_count = invalid_dict.get(date, 0)
+            accept_rate = _accept_rate(valid_count, invalid_count)
+            result.append({"date": date, "accept_rate": accept_rate})
+
+        return JsonResponse({"code": 200, "data": result})
+
+    # For other stats types
+    data = MrLiveReviewRepository.count_by_date(
+        project_name, target_branch, stats, start_time, end_time
+    )
+
+    return JsonResponse({"code": 200, "data": data})
+
+
 @require_http_methods(["POST"])
 def create_codehub_review(request):
     import json
