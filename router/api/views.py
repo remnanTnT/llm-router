@@ -623,6 +623,8 @@ def mr_live_review_stats_by_date(request):
 
     # Handle accept_rate separately
     if stats == "accept_rate":
+        from datetime import datetime
+
         valid_data = MrLiveReviewRepository.count_by_date(
             project_name, target_branch, "valid", start_date, end_date
         )
@@ -636,34 +638,52 @@ def mr_live_review_stats_by_date(request):
 
         all_dates = sorted(set(valid_dict.keys()) | set(invalid_dict.keys()))
         result = []
-        cumulative_valid = 0
-        cumulative_invalid = 0
         for date in all_dates:
             valid_count = valid_dict.get(date, 0)
             invalid_count = invalid_dict.get(date, 0)
-            cumulative_valid += valid_count
-            cumulative_invalid += invalid_count
+
+            # Calculate total counts until this date (inclusive)
+            date_obj = datetime.strptime(date, "%Y-%m-%d")
+            from zoneinfo import ZoneInfo
+            from django.utils import timezone
+            date_obj = timezone.make_aware(date_obj.replace(hour=23, minute=59, second=59), ZoneInfo("Asia/Shanghai"))
+
+            total_valid = MrLiveReviewRepository.count_until_date(
+                project_name, target_branch, "valid", date_obj
+            )
+            total_invalid = MrLiveReviewRepository.count_until_date(
+                project_name, target_branch, "invalid", date_obj
+            )
 
             accept_rate = _accept_rate(valid_count, invalid_count)
-            cumulative_accept_rate = _accept_rate(cumulative_valid, cumulative_invalid)
+            total_accept_rate = _accept_rate(total_valid, total_invalid)
             result.append({
                 "date": date,
                 "accept_rate": accept_rate,
-                "cumulative_accept_rate": cumulative_accept_rate
+                "total_accept_rate": total_accept_rate
             })
 
         return JsonResponse({"code": 200, "data": result})
 
     # For other stats types
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from django.utils import timezone
+
     data = MrLiveReviewRepository.count_by_date(
         project_name, target_branch, stats, start_date, end_date
     )
 
-    # Calculate cumulative count
-    cumulative_count = 0
+    # Calculate total count until each date (inclusive)
     for item in data:
-        cumulative_count += item["count"]
-        item["cumulative_count"] = cumulative_count
+        date_str = item["date"]
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        date_obj = timezone.make_aware(date_obj.replace(hour=23, minute=59, second=59), ZoneInfo("Asia/Shanghai"))
+
+        total_count = MrLiveReviewRepository.count_until_date(
+            project_name, target_branch, stats, date_obj
+        )
+        item["total_count"] = total_count
 
     return JsonResponse({"code": 200, "data": data})
 

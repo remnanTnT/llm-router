@@ -185,6 +185,58 @@ class MrLiveReviewRepository:
         return result
 
     @staticmethod
+    def count_until_date(
+        project_name: str,
+        target_branch: str | None,
+        stats_type: str,
+        until_date: datetime,
+    ) -> int:
+        """Count reviews until a specific date (inclusive).
+
+        Args:
+            project_name: The project to filter by
+            target_branch: The target branch to filter by, or "total" for all branches
+            stats_type: One of "valid", "invalid", "no_reply", "total"
+            until_date: Count all records up to and including this date (Beijing time)
+
+        Returns:
+            Total count of records until the specified date
+        """
+        queryset = MrLiveReview.objects.filter(project_name=project_name)
+
+        # Filter by target_branch if not "total"
+        if target_branch and target_branch != "total":
+            queryset = queryset.filter(target_branch=target_branch)
+
+        # Get all records
+        records = queryset.values("created_at", "is_valid_ai_comment", "rejected")
+
+        # Count records until the specified date
+        count = 0
+        for record in records:
+            created_at_str = record["created_at"]
+            dt = _parse_created_at_with_timezone(created_at_str)
+
+            if dt is None:
+                continue
+
+            # Check if before or on the until_date (inclusive)
+            if dt.date() > until_date.date():
+                continue
+
+            # Count based on stats_type
+            if stats_type == "total":
+                count += 1
+            elif stats_type == "valid" and record["is_valid_ai_comment"]:
+                count += 1
+            elif stats_type == "invalid" and record["rejected"]:
+                count += 1
+            elif stats_type == "no_reply" and not record["is_valid_ai_comment"] and not record["rejected"]:
+                count += 1
+
+        return count
+
+    @staticmethod
     def list_by_type(
         project_name: str,
         target_branch: str,
