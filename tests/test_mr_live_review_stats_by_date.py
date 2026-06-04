@@ -151,8 +151,10 @@ def test_stats_by_date_valid(sample_reviews):
     assert len(data["data"]) == 2  # 2 dates
     assert data["data"][0]["date"] == "2026-06-01"
     assert data["data"][0]["count"] == 1  # 1 valid on 2026-06-01
+    assert data["data"][0]["cumulative_count"] == 1  # cumulative: 1
     assert data["data"][1]["date"] == "2026-06-02"
     assert data["data"][1]["count"] == 0  # 0 valid on 2026-06-02 for main branch
+    assert data["data"][1]["cumulative_count"] == 1  # cumulative: 1+0=1
 
 
 @pytest.mark.django_db
@@ -216,8 +218,10 @@ def test_stats_by_date_total(sample_reviews):
     assert data["code"] == 200
     assert data["data"][0]["date"] == "2026-06-01"
     assert data["data"][0]["count"] == 2  # 2 total on 2026-06-01 for main
+    assert data["data"][0]["cumulative_count"] == 2  # cumulative: 2
     assert data["data"][1]["date"] == "2026-06-02"
     assert data["data"][1]["count"] == 1  # 1 total on 2026-06-02 for main
+    assert data["data"][1]["cumulative_count"] == 3  # cumulative: 2+1=3
 
 
 @pytest.mark.django_db
@@ -263,6 +267,7 @@ def test_stats_by_date_accept_rate(sample_reviews):
     # 2026-06-01: 1 valid, 1 invalid => accept_rate = 1/(1+1) = 0.5
     assert data["data"][0]["date"] == "2026-06-01"
     assert data["data"][0]["accept_rate"] == 0.5
+    assert data["data"][0]["cumulative_accept_rate"] == 0.5  # cumulative: 1/(1+1) = 0.5
 
 
 @pytest.mark.django_db

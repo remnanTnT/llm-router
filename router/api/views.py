@@ -636,11 +636,21 @@ def mr_live_review_stats_by_date(request):
 
         all_dates = sorted(set(valid_dict.keys()) | set(invalid_dict.keys()))
         result = []
+        cumulative_valid = 0
+        cumulative_invalid = 0
         for date in all_dates:
             valid_count = valid_dict.get(date, 0)
             invalid_count = invalid_dict.get(date, 0)
+            cumulative_valid += valid_count
+            cumulative_invalid += invalid_count
+
             accept_rate = _accept_rate(valid_count, invalid_count)
-            result.append({"date": date, "accept_rate": accept_rate})
+            cumulative_accept_rate = _accept_rate(cumulative_valid, cumulative_invalid)
+            result.append({
+                "date": date,
+                "accept_rate": accept_rate,
+                "cumulative_accept_rate": cumulative_accept_rate
+            })
 
         return JsonResponse({"code": 200, "data": result})
 
@@ -648,6 +658,12 @@ def mr_live_review_stats_by_date(request):
     data = MrLiveReviewRepository.count_by_date(
         project_name, target_branch, stats, start_date, end_date
     )
+
+    # Calculate cumulative count
+    cumulative_count = 0
+    for item in data:
+        cumulative_count += item["count"]
+        item["cumulative_count"] = cumulative_count
 
     return JsonResponse({"code": 200, "data": data})
 
