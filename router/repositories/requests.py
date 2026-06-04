@@ -90,6 +90,7 @@ class RequestRepository:
         task_status: str | None = None,
         attempt_count: int | None = None,
         final_prefix_cache: int = 0,
+        router_result: str | None = None,
     ) -> None:
         end_time = timezone.now()
         record.end_time = end_time
@@ -100,6 +101,8 @@ class RequestRepository:
         record.input_token_cnt = input_tokens or 0
         record.output_token_cnt = output_tokens or 0
         record.final_prefix_cache = final_prefix_cache or 0
+        if router_result:
+            record.router_result = router_result[:100]
         update_fields = [
             "end_time",
             "latency",
@@ -109,6 +112,7 @@ class RequestRepository:
             "input_token_cnt",
             "output_token_cnt",
             "final_prefix_cache",
+            "router_result",
         ]
         if target_pod_ip:
             record.target_pod_ip = target_pod_ip[:500]

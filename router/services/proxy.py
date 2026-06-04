@@ -5,9 +5,12 @@ import json
 import random
 import threading
 import time
+from typing import Any
 
 from django.http import HttpResponse, StreamingHttpResponse
 import requests
+
+import os
 
 from router.config import APP_CONFIG
 from router.repositories.models import ModelRepository
@@ -46,16 +49,96 @@ class ProxyService:
         self.circuit_breaker = CircuitBreakerService()
         self.vip_service = VIPChannelService()
         self.vip_port = int(APP_CONFIG.get("server", {}).get("vip_port", 8008))
+        self._router_system_prompt = None
+
+    def _get_auto_route_model(self, body: bytes, record: Any, context: ServerSelectionContext) -> tuple[Any, str | None]:
+        active_models = ModelRepository.list_active_models()
+        if not active_models:
+            return None, None
+        
+        model_names = [m.model_name for m in active_models]
+        
+        cached_model = self._check_cache_hit(body, active_models, model_names)
+        if cached_model:
+            return cached_model, "cache_hit"
+
+        return self._query_routing_llm(body, record, context, active_models, model_names)
+
+    def _check_cache_hit(self, body: bytes, active_models: list[Any], model_names: list[str]) -> Any | None:
+        chooser = self.chooser
+        if hasattr(chooser, "get_all_model_prefix_ratios"):
+            ratios = chooser.get_all_model_prefix_ratios(body, model_names)
+            if ratios:
+                best_name = max(ratios, key=ratios.get)
+                if ratios[best_name] > 0.9:
+                    return next((m for m in active_models if m.model_name == best_name), None)
+        return None
+
+    def _query_routing_llm(self, body: bytes, record: Any, context: ServerSelectionContext, active_models: list[Any], model_names: list[str]) -> tuple[Any, str | None]:
+        routing_models = ModelRepository.get_routing_models()
+        if not routing_models:
+            return self._get_default_model(), "no_routing_model"
+
+        routing_servers = []
+        model_id_to_name = {rm.id: rm.model_name for rm in routing_models}
+        for rm in routing_models:
+            routing_servers.extend(ServerRepository.list_by_model_id(rm.id, vip=False))
+        
+        if not routing_servers:
+            return self._get_default_model(), "no_routing_servers"
+
+        server = self.chooser.choose(routing_servers, context, set()) or random.choice(routing_servers)
+        
+        self._ensure_system_prompt(model_names)
+        user_prompt = self.chooser._text_from_body(body)
+        routing_model_name = model_id_to_name.get(server.model_id, "router")
+        
+        payload = {
+            "model": routing_model_name,
+            "messages": [{"role": "system", "content": self._router_system_prompt}, {"role": "user", "content": user_prompt}],
+            "stream": False
+        }
+
+        try:
+            url = self._build_url(server.base_url, "chat/completions", "")
+            headers = {"Content-Type": "application/json"}
+            if server.csb_token:
+                headers["csb-token"] = server.csb_token
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                for name in model_names:
+                    if name in result:
+                        matched = next((m for m in active_models if m.model_name == name), None)
+                        if matched:
+                            return matched, result
+        except Exception as e:
+            append_request_log(record.id, f"Routing LLM error: {str(e)}")
+
+        return self._get_default_model(), "fallback"
+
+    def _ensure_system_prompt(self, model_names: list[str]) -> None:
+        if self._router_system_prompt is None:
+            prompt_path = APP_CONFIG.get("router", {}).get("system_prompt_path", "router/assets/router_system_prompt.md")
+            try:
+                with open(prompt_path, "r") as f:
+                    self._router_system_prompt = f.read()
+            except Exception:
+                self._router_system_prompt = "You are a router. Return one of: " + ", ".join(model_names)
+
+    def _get_default_model(self) -> Any:
+        name = APP_CONFIG.get("router", {}).get("fallback_model", "glm-5.1")
+        return ModelRepository.get_by_name(name)
 
     def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None, is_vip_channel: bool = False):
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
-        model_id = model.id if model else None
-
-        candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel)
-        user_ip_id = 2 if served_as_vip else 1
+        
+        user_ip_id = 1 
         record = RequestRepository.create_processing(
             ip_id, model.id if model else 0, parsed.stream, user_agent, user_ip_id=user_ip_id
         )
+
+        model_id = model.id if model else None
         context = ServerSelectionContext(
             request_id=record.id,
             ip_id=ip_id,
@@ -66,15 +149,33 @@ class ProxyService:
             is_stream=parsed.stream,
             body=parsed.body,
         )
+
+        router_result = None
+        if parsed.model_name == "auto":
+            model, router_result = self._get_auto_route_model(parsed.body, record, context)
+            if model:
+                record.model_id = model.id
+                record.save(update_fields=["model_id"])
+                parsed.model_name = model.model_name
+                context.model_id = model.id
+                context.model_name = model.model_name
+                # Update body with actual model name if it was "auto"
+                try:
+                    body_data = json.loads(parsed.body.decode("utf-8"))
+                    body_data["model"] = model.model_name
+                    parsed.body = json.dumps(body_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    context.body = parsed.body
+                except Exception:
+                    pass
+        
+        candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel)
+        if served_as_vip:
+            record.user_ip_id = 2
+            record.save(update_fields=["user_ip_id"])
+
+        context.router_result = router_result
         if not candidates:
-            message = "no online upstream server available"
-            RequestRepository.finish(record, 503, message)
-            self._maybe_delay_opencode_failure(user_agent, 503)
-            return HttpResponse(
-                json.dumps(error_payload(message, "service_unavailable")),
-                status=503,
-                content_type="application/json",
-            )
+            return self._handle_no_candidates(record, user_agent)
 
         return self._route_with_retry(
             django_request, path, headers, parsed.body, record, parsed.model_name,
@@ -134,11 +235,17 @@ class ProxyService:
         last_server = None
         last_status = 502
         last_reason = "Bad Gateway"
+        
+        # We use a while True and internal break/continue to handle dynamic candidates (Flash switch)
+        # while keeping the global max attempts limit.
         try:
-            while attempts < min(self.max_attempts_per_request, len(candidates)):
+            while attempts < self.max_attempts_per_request:
+                # If we've tried all candidates for the CURRENT model, but still have attempts,
+                # this normally means we fail. But with model switching, we might have new candidates.
                 server = self.chooser.choose(candidates, context, attempted_server_ids)
                 if server is None:
                     break
+                
                 last_server = server
                 attempted_server_ids.add(server.id)
                 attempts += 1
@@ -155,10 +262,7 @@ class ProxyService:
                 self._increment_workload(server)
                 workload_handed_off = False
                 try:
-                    if is_stream:
-                        upstream = self._handle_stream(django_request, server, upstream_url, headers, body)
-                    else:
-                        upstream = self._handle_normal(django_request, server, upstream_url, headers, body, upstream_client)
+                    upstream = self._perform_request(django_request, server, upstream_url, headers, body, is_stream, upstream_client)
 
                     if not is_stream:
                         content = upstream.content
@@ -170,11 +274,7 @@ class ProxyService:
                     last_status = status_code
                     last_reason = reason
                     
-                    # We no longer retry based on HTTP status codes.
-                    retry = False
-                    self._log_attempt(record.id, attempts, server, "status", retry, status=status_code)
-                    
-                    # Mark unhealthy if server returns >= 500
+                    self._log_attempt(record.id, attempts, server, "status", False, status=status_code)
                     if status_code >= 500:
                         self._mark_unhealthy(server)
 
@@ -188,7 +288,21 @@ class ProxyService:
                             upstream.close()
                         
                         fail_reason = self._extract_fail_reason(content, reason)
-                        RequestRepository.finish(record, status_code, fail_reason, 0, 0, target_pod_ip, model.id if model else None, attempt_count=attempts)
+                        
+                        if self._check_context_overflow(status_code, model, fail_reason) and model.model_name != "DeepSeek-V4-Flash":
+                            flash_model = ModelRepository.get_by_name("DeepSeek-V4-Flash")
+                            if flash_model:
+                                append_request_log(record.id, f"Context overflow detected ({fail_reason}), switching to DeepSeek-V4-Flash")
+                                model = flash_model
+                                candidates, _ = self._select_candidates(path, model, served_as_vip)
+                                context.model_id = model.id
+                                context.model_name = model.model_name
+                                body = self._update_body_model(body, model.model_name)
+                                context.body = body
+                                if candidates:
+                                    continue 
+
+                        RequestRepository.finish(record, status_code, fail_reason, 0, 0, target_pod_ip, model.id if model else None, attempt_count=attempts, router_result=getattr(context, "router_result", None))
                         self._after_finish(served_as_vip, model)
                         self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, status_code, content)
                         
@@ -199,7 +313,7 @@ class ProxyService:
 
                     if not is_stream:
                         input_tokens, output_tokens, cached_tokens = self._parse_json_usage(content)
-                        RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, model.id if model else None, attempt_count=attempts, final_prefix_cache=cached_tokens)
+                        RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, model.id if model else None, attempt_count=attempts, final_prefix_cache=cached_tokens, router_result=getattr(context, "router_result", None))
                         self._after_finish(served_as_vip, model)
                         
                         response = HttpResponse(content, status=status_code)
@@ -208,7 +322,8 @@ class ProxyService:
                         return response
 
                     workload_handed_off = True
-                    return self._stream_success(django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model)
+                    # Use the updated model_name (real model) for recording
+                    return self._stream_success(django_request, upstream, record, server, context.model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model)
 
                 except requests.exceptions.ReadTimeout:
                     if disconnect_event.is_set():
@@ -222,7 +337,7 @@ class ProxyService:
                         return self._client_closed_response(record, served_as_vip, model)
                     last_status = 502
                     last_reason = "Bad Gateway"
-                    retry = attempts < min(self.max_attempts_per_request, len(candidates))
+                    retry = attempts < self.max_attempts_per_request
                     self._mark_unhealthy(server)
                     self._log_attempt(record.id, attempts, server, exc.__class__.__name__, retry, reason=str(exc))
                     if retry:
@@ -235,7 +350,7 @@ class ProxyService:
             self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
             status = 504 if last_status == 504 else 502
             message = "request timeout" if status == 504 else "502 Bad Gateway"
-            RequestRepository.finish(record, status, message, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts)
+            RequestRepository.finish(record, status, message, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts, router_result=getattr(context, "router_result", None))
             self._after_finish(served_as_vip, model)
             error_type = "gateway_timeout_error" if status == 504 else "server_error"
             self._maybe_delay_opencode_failure(user_agent, status)
@@ -292,16 +407,16 @@ class ProxyService:
                 self._notify_chooser_response(server, context, status_code)
                 input_tokens, output_tokens, cached_tokens = parse_sse_usage(chunks)
                 final_model_id = self._ensure_model_after_success(model_name, status_code)
-                RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, final_model_id, attempt_count=attempts, final_prefix_cache=cached_tokens)
+                RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, final_model_id, attempt_count=attempts, final_prefix_cache=cached_tokens, router_result=getattr(context, "router_result", None))
             except requests.exceptions.ReadTimeout:
                 yield timeout_sse_event()
-                RequestRepository.finish(record, 504, "request timeout, please try again later", target_pod_ip=target_pod_ip, attempt_count=attempts)
+                RequestRepository.finish(record, 504, "request timeout, please try again later", target_pod_ip=target_pod_ip, attempt_count=attempts, model_id=model.id if model else None, router_result=getattr(context, "router_result", None))
             except requests.RequestException:
                 message = "502 Bad Gateway"
                 payload = error_payload(message, "server_error")
                 yield f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n".encode("utf-8")
                 self._mark_unhealthy(server)
-                RequestRepository.finish(record, 502, message, target_pod_ip=target_pod_ip, attempt_count=attempts)
+                RequestRepository.finish(record, 502, message, target_pod_ip=target_pod_ip, attempt_count=attempts, model_id=model.id if model else None, router_result=getattr(context, "router_result", None))
             finally:
                 upstream.close()
                 self._decrement_workload(server)
@@ -454,3 +569,21 @@ class ProxyService:
             "response_body": resp_body_str[:5000],
         }, ensure_ascii=False)
         append_error_log(request_id, log_entry)
+
+    def _perform_request(self, django_request, server, upstream_url, headers, body, is_stream, upstream_client):
+        if is_stream:
+            return self._handle_stream(django_request, server, upstream_url, headers, body)
+        return self._handle_normal(django_request, server, upstream_url, headers, body, upstream_client)
+
+    def _check_context_overflow(self, status_code: int, model: Any, fail_reason: str) -> bool:
+        if status_code == 400 and model and model.max_context_window:
+            return str(model.max_context_window) in fail_reason
+        return False
+
+    def _update_body_model(self, body: bytes, model_name: str) -> bytes:
+        try:
+            body_data = json.loads(body.decode("utf-8"))
+            body_data["model"] = model_name
+            return json.dumps(body_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except Exception:
+            return body
