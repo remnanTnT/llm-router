@@ -49,7 +49,28 @@ def input_token(request):
     if isinstance(parsed, JsonResponse):
         return parsed
     start, end = parsed
-    return JsonResponse({"code": 200, "total_input_tokens": RequestRepository.sum_input_tokens(start, end)})
+
+    # Handle model_name parameter
+    model_name = request.GET.get("model_name")
+    if model_name is not None and not model_name.strip():
+        return _bad_request("model_name cannot be blank")
+
+    # If model_name is "total" or not provided, return sum for all models
+    if not model_name or model_name.strip().lower() == "total":
+        total_tokens = RequestRepository.sum_input_tokens(start, end)
+        return JsonResponse({"code": 200, "total_input_tokens": total_tokens})
+
+    # Otherwise, filter by specific model
+    model = _model_or_error(model_name.strip())
+    if isinstance(model, JsonResponse):
+        return model
+
+    total_tokens = RequestRepository.sum_input_tokens(start, end, model.id)
+    return JsonResponse({
+        "code": 200,
+        "model_name": model.model_name,
+        "total_input_tokens": total_tokens
+    })
 
 
 @require_http_methods(["GET"])
@@ -58,7 +79,28 @@ def output_token(request):
     if isinstance(parsed, JsonResponse):
         return parsed
     start, end = parsed
-    return JsonResponse({"code": 200, "total_output_tokens": RequestRepository.sum_output_tokens(start, end)})
+
+    # Handle model_name parameter
+    model_name = request.GET.get("model_name")
+    if model_name is not None and not model_name.strip():
+        return _bad_request("model_name cannot be blank")
+
+    # If model_name is "total" or not provided, return sum for all models
+    if not model_name or model_name.strip().lower() == "total":
+        total_tokens = RequestRepository.sum_output_tokens(start, end)
+        return JsonResponse({"code": 200, "total_output_tokens": total_tokens})
+
+    # Otherwise, filter by specific model
+    model = _model_or_error(model_name.strip())
+    if isinstance(model, JsonResponse):
+        return model
+
+    total_tokens = RequestRepository.sum_output_tokens(start, end, model.id)
+    return JsonResponse({
+        "code": 200,
+        "model_name": model.model_name,
+        "total_output_tokens": total_tokens
+    })
 
 
 @require_http_methods(["GET"])
