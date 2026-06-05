@@ -275,3 +275,27 @@ class RequestRepository:
                 model_id__in=model_ids,
             ).values("model_id", "send_time", "latency")
         )
+
+    @staticmethod
+    def sum_input_tokens(start: datetime, end: datetime) -> int:
+        """Calculate the sum of final_prefix_cache + input_token_cnt for the given time range."""
+        result = RequestRecord.objects.filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success"
+        ).aggregate(
+            total_input=models.Sum(models.F("final_prefix_cache") + models.F("input_token_cnt"))
+        )
+        return result["total_input"] or 0
+
+    @staticmethod
+    def sum_output_tokens(start: datetime, end: datetime) -> int:
+        """Calculate the sum of output_token_cnt for the given time range."""
+        result = RequestRecord.objects.filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success"
+        ).aggregate(
+            total_output=models.Sum("output_token_cnt")
+        )
+        return result["total_output"] or 0

@@ -44,6 +44,24 @@ def total_request_count(request):
 
 
 @require_http_methods(["GET"])
+def input_token(request):
+    parsed = _time_range_or_error(request)
+    if isinstance(parsed, JsonResponse):
+        return parsed
+    start, end = parsed
+    return JsonResponse({"code": 200, "total_input_tokens": RequestRepository.sum_input_tokens(start, end)})
+
+
+@require_http_methods(["GET"])
+def output_token(request):
+    parsed = _time_range_or_error(request)
+    if isinstance(parsed, JsonResponse):
+        return parsed
+    start, end = parsed
+    return JsonResponse({"code": 200, "total_output_tokens": RequestRepository.sum_output_tokens(start, end)})
+
+
+@require_http_methods(["GET"])
 def model_request_stats(request):
     parsed = _time_range_or_error(request)
     if isinstance(parsed, JsonResponse):

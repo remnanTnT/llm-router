@@ -6,6 +6,8 @@ from router.api import views
 urlpatterns = [
     path("request_stats", views.request_stats),
     path("total_request_count", views.total_request_count),
+    path("input_token", views.input_token),
+    path("output_token", views.output_token),
     path("model_request_stats", views.model_request_stats),
     path("all_model_request_stats", views.all_model_request_stats),
     path("models", views.models),
