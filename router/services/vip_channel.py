@@ -23,7 +23,7 @@ class VIPChannelService:
         threshold = getattr(model, "vip", None)
         return threshold is not None and threshold > 0
 
-    def select_candidates(self, model) -> tuple[list[Any], bool]:
+    def select_candidates(self, model, estimate_tokens: int = 0) -> tuple[list[Any], bool]:
         """Pick server candidates for a VIP request and run scale-up.
 
         Returns ``(candidates, served_as_vip)``. ``served_as_vip`` is False only
@@ -33,8 +33,8 @@ class VIPChannelService:
         ServerRepository.demote_expired_cooldowns(self.cooldown_seconds, model.id)
 
         threshold = int(model.vip or 0)
-        vip_set = ServerRepository.list_by_model_id(model.id, vip=True)
-        normal = ServerRepository.list_by_model_id(model.id, vip=False)
+        vip_set = ServerRepository.list_by_model_id(model.id, vip=True, estimate_tokens=estimate_tokens)
+        normal = ServerRepository.list_by_model_id(model.id, vip=False, estimate_tokens=estimate_tokens)
 
         if not vip_set:
             if len(normal) > self.min_normal_servers:
@@ -42,8 +42,8 @@ class VIPChannelService:
                 if ServerRepository.promote_to_vip(promoted):
                     return [promoted], True
                 # Lost the race: re-list and continue.
-                vip_set = ServerRepository.list_by_model_id(model.id, vip=True)
-                normal = ServerRepository.list_by_model_id(model.id, vip=False)
+                vip_set = ServerRepository.list_by_model_id(model.id, vip=True, estimate_tokens=estimate_tokens)
+                normal = ServerRepository.list_by_model_id(model.id, vip=False, estimate_tokens=estimate_tokens)
                 if not vip_set:
                     return normal, False
             else:
@@ -69,14 +69,14 @@ class VIPChannelService:
 
         return vip_set, True
 
-    def maybe_scale_down(self, model) -> None:
+    def maybe_scale_down(self, model, estimate_tokens: int = 0) -> None:
         if not self.is_vip_eligible(model):
             return
 
         ServerRepository.demote_expired_cooldowns(self.cooldown_seconds, model.id)
 
         threshold = int(model.vip or 0)
-        vip_set = ServerRepository.list_by_model_id(model.id, vip=True)
+        vip_set = ServerRepository.list_by_model_id(model.id, vip=True, estimate_tokens=estimate_tokens)
         if not vip_set:
             return
 

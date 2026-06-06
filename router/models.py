@@ -77,6 +77,7 @@ class Server(TimestampedSoftDeleteModel):
     workload = models.IntegerField(default=0)
     vip = models.BooleanField(default=False)
     vip_cooldown = models.DateTimeField(blank=True, null=True)
+    context_window = models.IntegerField(blank=True, null=True)
 
     class Meta:
         managed = False
@@ -103,6 +104,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
     final_prefix_cache = models.IntegerField(default=0)
     last_match = models.BigIntegerField(blank=True, null=True)
     router_result = models.CharField(max_length=100, blank=True, null=True)
+    estimate_tokens = models.IntegerField(default=0)
 
     class Meta:
         managed = False

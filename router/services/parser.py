@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import json
 from typing import Any
 
+from router.utils.token_count import fast_estimate_tokens
+
 
 @dataclass
 class ParsedRequest:
@@ -12,6 +14,7 @@ class ParsedRequest:
     stream: bool
     max_tokens: int | None
     is_json: bool
+    estimated_input_tokens: int = 0
 
 
 class RequestParser:
@@ -22,9 +25,17 @@ class RequestParser:
         if not body:
             return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=False)
         try:
-            data = json.loads(body.decode("utf-8"))
+            body_str = body.decode("utf-8")
+            data = json.loads(body_str)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=False)
+            # For non-JSON or decode error, estimate from raw body if it's text-like
+            est_tokens = 0
+            try:
+                est_tokens = fast_estimate_tokens(body.decode("utf-8"))
+            except Exception:
+                pass
+            return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=False, estimated_input_tokens=est_tokens)
+
         if not isinstance(data, dict):
             return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=True)
 
@@ -40,6 +51,11 @@ class RequestParser:
             data["max_tokens"] = self.default_max_tokens
 
         max_tokens = self._safe_int(data.get("max_tokens"))
+        
+        # Estimate input tokens from prompt or messages
+        prompt_text = self._extract_prompt_text(data)
+        estimated_input_tokens = fast_estimate_tokens(prompt_text)
+
         new_body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         return ParsedRequest(
             body=new_body,
@@ -47,7 +63,35 @@ class RequestParser:
             stream=stream,
             max_tokens=max_tokens,
             is_json=True,
+            estimated_input_tokens=estimated_input_tokens,
         )
+
+    def _extract_prompt_text(self, data: dict) -> str:
+        """Extract all text content from the request data for token estimation."""
+        messages = data.get("messages")
+        if isinstance(messages, list):
+            parts = []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            parts.append(str(item.get("text", "")))
+                        elif isinstance(item, str):
+                            parts.append(item)
+            return "\n".join(parts)
+
+        prompt = data.get("prompt")
+        if isinstance(prompt, str):
+            return prompt
+        if isinstance(prompt, list):
+            return "\n".join(str(p) for p in prompt if isinstance(p, (str, int, float)))
+
+        return ""
 
     @staticmethod
     def _safe_int(value: Any) -> int | None:

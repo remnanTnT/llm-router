@@ -43,6 +43,10 @@ def api_test_tables():
             schema_editor.add_field(Model, Model._meta.get_field("max_context_window"))
         if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "router_result"):
             schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("router_result"))
+        if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "estimate_tokens"):
+            schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("estimate_tokens"))
+        if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", "context_window"):
+            schema_editor.add_field(Server, Server._meta.get_field("context_window"))
     yield
 
 
