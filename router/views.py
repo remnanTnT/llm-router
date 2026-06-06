@@ -71,7 +71,13 @@ def proxy(request, path: str):
 
         parser = RequestParser(int(APP_CONFIG.get("proxy", {}).get("default_max_tokens", 8528)))
         parsed = parser.parse(body)
-        model = ModelRepository.get_by_name(parsed.model_name)
+        input_model_name = parsed.model_name
+        model = ModelRepository.get_by_name(input_model_name)
+
+        if input_model_name and input_model_name != "auto" and model is None:
+            message = f"Model {input_model_name} is not supported."
+            RequestRepository.create_blocked(ip.id, 0, parsed.stream, user_agent, 400, message)
+            return error_response(400, message, "invalid_request_error")
 
         if model and model.deprecation:
             message = model.deprecation
