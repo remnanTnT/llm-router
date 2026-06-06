@@ -1,3 +1,6 @@
+from unittest.mock import MagicMock
+
+from django.test import Client
 from django.utils import timezone
 
 from router.models import Model, Server
@@ -26,6 +29,31 @@ def test_v1_models_routes_to_random_online_server_without_model_id(monkeypatch):
     assert choices == [[model_server, shared_server]]
     assert offline_server not in choices[0]
     assert deleted_server not in choices[0]
+
+
+def test_v1_models_endpoint_allows_missing_model_name(monkeypatch):
+    Server.objects.create(model_id=None, base_url="http://shared.example", is_online=True)
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert method == "GET"
+        assert url == "http://shared.example/models"
+        assert kwargs["data"] is None
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b'{"data":[]}'
+        upstream.headers = {"content-type": "application/json"}
+        return upstream
+
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().get("/v1/models")
+
+    assert response.status_code == 200
+    assert response.content == b'{"data":[]}'
 
 
 def test_non_models_request_without_model_id_uses_null_model_servers():
