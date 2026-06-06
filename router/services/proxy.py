@@ -55,6 +55,8 @@ class _RouteAttemptResult:
 
 
 class ProxyService:
+    SMALL_REQUEST_ROUTING_TOKEN_LIMIT = 3000
+
     def __init__(self, chooser=None):
         proxy_config = APP_CONFIG.get("proxy", {})
         lb_config = APP_CONFIG.get("load_balancer", {})
@@ -118,11 +120,7 @@ class ProxyService:
         user_prompt = self.chooser._text_from_body(body)
         routing_model_name = model_id_to_name.get(server.model_id, "router")
         
-        payload = {
-            "model": routing_model_name,
-            "messages": [{"role": "system", "content": self._router_system_prompt}, {"role": "user", "content": user_prompt}],
-            "stream": False
-        }
+        payload = self._build_routing_payload(routing_model_name, user_prompt)
 
         try:
             url = self._build_url(server.base_url, "chat/completions", "")
@@ -151,6 +149,15 @@ class ProxyService:
             except Exception:
                 self._router_system_prompt = "You are a router. Return one of: " + ", ".join(model_names)
 
+    def _build_routing_payload(self, model_name: str, user_prompt: str) -> dict[str, Any]:
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "system", "content": self._router_system_prompt}, {"role": "user", "content": user_prompt}],
+            "stream": False,
+        }
+        self._disable_thinking(payload)
+        return payload
+
     def _get_default_model(self) -> Any:
         name = APP_CONFIG.get("router", {}).get("fallback_model", "glm-5.1")
         return ModelRepository.get_by_name(name)
@@ -159,7 +166,11 @@ class ProxyService:
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
         record = self._create_processing_record(ip_id, model, parsed, user_agent)
         context = self._selection_context(record, ip_id, model, parsed, path, django_request.method)
+        original_model_name = parsed.model_name
         model, router_result = self._resolve_auto_model(parsed, record, context, model)
+        if original_model_name != "auto":
+            model, small_request_result = self._resolve_small_request_routing_model(parsed, record, context, model)
+            router_result = small_request_result or router_result
 
         candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel, estimate_tokens=parsed.estimated_input_tokens)
         if served_as_vip:
@@ -209,11 +220,37 @@ class ProxyService:
             self._apply_resolved_model(parsed, record, context, model)
         return model, router_result
 
-    def _apply_resolved_model(self, parsed, record, context: ServerSelectionContext, model) -> None:
+    def _resolve_small_request_routing_model(self, parsed, record, context: ServerSelectionContext, model):
+        if not self._should_route_small_request(parsed):
+            return model, None
+
+        routing_model = self._get_small_request_routing_model(parsed.estimated_input_tokens)
+        if routing_model is None:
+            return model, None
+
+        self._apply_resolved_model(parsed, record, context, routing_model, disable_thinking=True)
+        return routing_model, "small_request_routing"
+
+    def _should_route_small_request(self, parsed) -> bool:
+        return int(parsed.estimated_input_tokens or 0) < self.SMALL_REQUEST_ROUTING_TOKEN_LIMIT
+
+    @classmethod
+    def can_route_small_request(cls, estimate_tokens: int = 0) -> bool:
+        return cls._get_small_request_routing_model(estimate_tokens) is not None
+
+    @staticmethod
+    def _get_small_request_routing_model(estimate_tokens: int = 0):
+        for routing_model in ModelRepository.get_routing_models():
+            candidates = ServerRepository.list_by_model_id(routing_model.id, vip=False, estimate_tokens=estimate_tokens)
+            if candidates:
+                return routing_model
+        return None
+
+    def _apply_resolved_model(self, parsed, record, context: ServerSelectionContext, model, disable_thinking: bool = False) -> None:
         record.model_id = model.id
         record.save(update_fields=["model_id"])
         parsed.model_name = model.model_name
-        parsed.body = self._update_body_model(parsed.body, model.model_name)
+        parsed.body = self._update_body_model(parsed.body, model.model_name, disable_thinking=disable_thinking)
         context.model_id = model.id
         context.model_name = model.model_name
         context.body = parsed.body
@@ -823,10 +860,20 @@ class ProxyService:
             return str(model.max_context_window) in fail_reason
         return False
 
-    def _update_body_model(self, body: bytes, model_name: str) -> bytes:
+    def _update_body_model(self, body: bytes, model_name: str, disable_thinking: bool = False) -> bytes:
         try:
             body_data = json.loads(body.decode("utf-8"))
             body_data["model"] = model_name
+            if disable_thinking:
+                self._disable_thinking(body_data)
             return json.dumps(body_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         except Exception:
             return body
+
+    @staticmethod
+    def _disable_thinking(body_data: dict[str, Any]) -> None:
+        chat_template_kwargs = body_data.get("chat_template_kwargs")
+        if not isinstance(chat_template_kwargs, dict):
+            chat_template_kwargs = {}
+        chat_template_kwargs["enable_thinking"] = False
+        body_data["chat_template_kwargs"] = chat_template_kwargs

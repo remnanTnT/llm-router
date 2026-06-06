@@ -73,8 +73,14 @@ def proxy(request, path: str):
         parsed = parser.parse(body)
         input_model_name = parsed.model_name
         model = ModelRepository.get_by_name(input_model_name)
+        can_route_small_request = (
+            input_model_name
+            and input_model_name != "auto"
+            and parsed.estimated_input_tokens < ProxyService.SMALL_REQUEST_ROUTING_TOKEN_LIMIT
+            and ProxyService.can_route_small_request(parsed.estimated_input_tokens)
+        )
 
-        if input_model_name and input_model_name != "auto" and model is None:
+        if input_model_name and input_model_name != "auto" and model is None and not can_route_small_request:
             message = f"Model {input_model_name} is not supported."
             RequestRepository.create_blocked(ip.id, 0, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_input_tokens)
             return error_response(400, message, "invalid_request_error")

@@ -1,7 +1,7 @@
 import json
 import pytest
 from django.test import Client
-from router.models import Model
+from router.models import Model, Server
 
 @pytest.mark.django_db
 def test_deprecated_model_returns_400():
@@ -65,6 +65,37 @@ def test_unknown_model_returns_400():
     record = RequestRecord.objects.last()
     assert record.status == "400 Bad Request"
     assert record.fail_reason == data["error"]["message"]
+
+
+@pytest.mark.django_db
+def test_small_unknown_model_uses_routing_server(monkeypatch):
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://router.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "router-model"
+        assert data["chat_template_kwargs"] == {"enable_thinking": False}
+        upstream = type("Upstream", (), {})()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "unknown-model", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
 
 
 @pytest.mark.django_db
