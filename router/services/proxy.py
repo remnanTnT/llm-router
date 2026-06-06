@@ -117,10 +117,9 @@ class ProxyService:
         server = self.chooser.choose(routing_servers, context, set()) or random.choice(routing_servers)
         
         self._ensure_system_prompt(model_names)
-        user_prompt = self.chooser._text_from_body(body)
         routing_model_name = model_id_to_name.get(server.model_id, "router")
         
-        payload = self._build_routing_payload(routing_model_name, user_prompt)
+        payload = self._build_routing_payload(routing_model_name, body)
 
         try:
             url = self._build_url(server.base_url, "chat/completions", "")
@@ -149,14 +148,41 @@ class ProxyService:
             except Exception:
                 self._router_system_prompt = "You are a router. Return one of: " + ", ".join(model_names)
 
-    def _build_routing_payload(self, model_name: str, user_prompt: str) -> dict[str, Any]:
+    def _build_routing_payload(self, model_name: str, body: bytes) -> dict[str, Any]:
         payload = {
             "model": model_name,
-            "messages": [{"role": "system", "content": self._router_system_prompt}, {"role": "user", "content": user_prompt}],
+            "messages": self._routing_messages_from_body(body),
             "stream": False,
         }
         self._disable_thinking(payload)
         return payload
+
+    def _routing_messages_from_body(self, body: bytes) -> list[dict[str, Any]]:
+        messages = [{"role": "system", "content": self._router_system_prompt}]
+        messages.extend(self._user_messages_from_body(body))
+        return messages
+
+    @staticmethod
+    def _user_messages_from_body(body: bytes) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return []
+        if not isinstance(data, dict):
+            return []
+
+        source_messages = data.get("messages")
+        if not isinstance(source_messages, list):
+            return []
+
+        user_messages: list[dict[str, Any]] = []
+        for message in source_messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            if "content" not in message:
+                continue
+            user_messages.append({"role": "user", "content": message["content"]})
+        return user_messages
 
     def _get_default_model(self) -> Any:
         name = APP_CONFIG.get("router", {}).get("fallback_model", "glm-5.1")
@@ -167,10 +193,19 @@ class ProxyService:
         record = self._create_processing_record(ip_id, model, parsed, user_agent)
         context = self._selection_context(record, ip_id, model, parsed, path, django_request.method)
         original_model_name = parsed.model_name
-        model, router_result = self._resolve_auto_model(parsed, record, context, model)
-        if original_model_name != "auto":
-            model, small_request_result = self._resolve_small_request_routing_model(parsed, record, context, model)
-            router_result = small_request_result or router_result
+        should_record_model_choice = original_model_name == "auto" or self._should_route_small_request(parsed)
+        model_choice_started = time.monotonic() if should_record_model_choice else None
+        try:
+            model, router_result = self._resolve_auto_model(parsed, record, context, model)
+            if original_model_name != "auto":
+                model, small_request_result = self._resolve_small_request_routing_model(parsed, record, context, model)
+                router_result = small_request_result or router_result
+        finally:
+            if model_choice_started is not None:
+                RequestRepository.record_model_choosing_latency(
+                    record,
+                    int((time.monotonic() - model_choice_started) * 1000),
+                )
 
         candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel, estimate_tokens=parsed.estimated_input_tokens)
         if served_as_vip:

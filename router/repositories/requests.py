@@ -150,6 +150,11 @@ class RequestRepository:
         record.save(update_fields=update_fields)
 
     @staticmethod
+    def record_model_choosing_latency(record: RequestRecord, latency_ms: int) -> None:
+        record.model_choosing_latency = max(0, int(latency_ms))
+        record.save(update_fields=["model_choosing_latency"])
+
+    @staticmethod
     def cleanup_stale(model_id: int | None = None, threshold_minutes: int = 20, ip_id: int | None = None) -> int:
         from django.db import transaction
         from router.repositories.servers import ServerRepository

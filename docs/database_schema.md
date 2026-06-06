@@ -79,6 +79,7 @@ ALTER TABLE requests ALTER COLUMN target_pod_ip TYPE VARCHAR(500);
 ALTER TABLE requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN prefix_cache DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN last_match BIGINT NULL;
+ALTER TABLE requests ADD COLUMN model_choosing_latency BIGINT NULL;
 ```
 
 ## Schema Validation

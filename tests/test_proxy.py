@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 from django.test import Client
 from django.utils import timezone
 
-from router.models import Model, Server
+from router.models import Model, RequestRecord, Server
 from router.route_algorithm.base import ServerSelectionContext
 from router.services.proxy import ProxyService
 
@@ -120,7 +120,75 @@ def test_auto_route_request_disables_thinking(monkeypatch):
     assert sent["url"] == "http://router.example/chat/completions"
     assert sent["json"]["model"] == "router-model"
     assert sent["json"]["stream"] is False
+    assert sent["json"]["messages"][-1] == {"role": "user", "content": "hello"}
     assert sent["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model")
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    sent = {}
+
+    def fake_post(url, json, headers, timeout):
+        sent["json"] = json
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": "target-model"}}]}
+        return response
+
+    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+
+    request_body = {
+        "model": "auto",
+        "messages": [
+            {"role": "system", "content": "user system prompt"},
+            {"role": "developer", "content": "developer skill instructions"},
+            {"role": "user", "content": "first user request"},
+            {"role": "assistant", "content": "assistant response"},
+            {"role": "tool", "content": "mcp tool result"},
+            {"role": "user", "content": [{"type": "text", "text": "second user request"}], "name": "alice"},
+        ],
+        "skills": [{"name": "secret-skill"}],
+        "mcp_servers": [{"name": "secret-mcp"}],
+        "tools": [{"type": "function", "function": {"name": "secret_tool"}}],
+    }
+    body = json.dumps(request_body).encode("utf-8")
+    context = ServerSelectionContext(
+        request_id=123,
+        ip_id=None,
+        model_id=None,
+        model_name="auto",
+        path="chat/completions",
+        method="POST",
+        is_stream=False,
+        body=body,
+    )
+
+    model, router_result = ProxyService(chooser=_RoutingChooser())._query_routing_llm(
+        body,
+        MagicMock(id=123),
+        context,
+        [target_model],
+        [target_model.model_name],
+    )
+
+    assert model == target_model
+    assert router_result == "target-model"
+    assert sent["json"]["messages"][0]["role"] == "system"
+    assert sent["json"]["messages"][1:] == [
+        {"role": "user", "content": "first user request"},
+        {"role": "user", "content": [{"type": "text", "text": "second user request"}]},
+    ]
+    payload_text = json.dumps(sent["json"])
+    assert "user system prompt" not in payload_text
+    assert "developer skill instructions" not in payload_text
+    assert "assistant response" not in payload_text
+    assert "mcp tool result" not in payload_text
+    assert "secret-skill" not in payload_text
+    assert "secret-mcp" not in payload_text
+    assert "secret_tool" not in payload_text
 
 
 def test_update_body_model_can_disable_thinking():
@@ -264,6 +332,8 @@ def test_small_auto_request_is_not_forced_to_routing_server(monkeypatch):
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
     )
+    monotonic_values = iter([10.0, 10.125])
+    monkeypatch.setattr("router.services.proxy.time.monotonic", lambda: next(monotonic_values))
 
     django_request = MagicMock()
     django_request.method = "POST"
@@ -287,3 +357,5 @@ def test_small_auto_request_is_not_forced_to_routing_server(monkeypatch):
     )
 
     assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_choosing_latency == 125

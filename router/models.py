@@ -106,6 +106,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
     last_match = models.BigIntegerField(blank=True, null=True)
     router_result = models.CharField(max_length=100, blank=True, null=True)
     estimate_tokens = models.IntegerField(default=0)
+    model_choosing_latency = models.BigIntegerField(blank=True, null=True)
 
     class Meta:
         managed = False
