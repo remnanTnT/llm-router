@@ -107,7 +107,7 @@ class ProxyService:
         routing_servers = []
         model_id_to_name = {rm.id: rm.model_name for rm in routing_models}
         for rm in routing_models:
-            routing_servers.extend(ServerRepository.list_by_model_id(rm.id, vip=False))
+            routing_servers.extend(ServerRepository.list_by_model_id(rm.id, vip=False, estimate_tokens=0))
         
         if not routing_servers:
             return self._get_default_model(), "no_routing_servers"
@@ -161,7 +161,7 @@ class ProxyService:
         context = self._selection_context(record, ip_id, model, parsed, path, django_request.method)
         model, router_result = self._resolve_auto_model(parsed, record, context, model)
 
-        candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel)
+        candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel, estimate_tokens=parsed.estimated_input_tokens)
         if served_as_vip:
             record.user_ip_id = 2
             record.save(update_fields=["user_ip_id"])
@@ -184,6 +184,7 @@ class ProxyService:
             parsed.stream,
             user_agent,
             user_ip_id=user_ip_id,
+            estimate_tokens=parsed.estimated_input_tokens,
         )
 
     @staticmethod
@@ -224,27 +225,28 @@ class ProxyService:
             url = f"{url}{separator}{query_string}"
         return url
 
-    def _candidates_for_request(self, path: str, model_id: int | None, vip: bool | None = None):
+    def _candidates_for_request(self, path: str, model_id: int | None, vip: bool | None = None, estimate_tokens: int = 0):
         if path.rstrip("/") == "models" and model_id is None:
             candidates = ServerRepository.list_all_online()
-            return [random.choice(candidates)] if candidates else []
-        return ServerRepository.list_by_model_id(model_id, vip=vip)
+            filtered = [s for s in candidates if s.context_window is None or s.context_window >= estimate_tokens]
+            return [random.choice(filtered)] if filtered else []
+        return ServerRepository.list_by_model_id(model_id, vip=vip, estimate_tokens=estimate_tokens)
 
-    def _select_candidates(self, path: str, model, is_vip_channel: bool):
+    def _select_candidates(self, path: str, model, is_vip_channel: bool, estimate_tokens: int = 0):
         model_id = model.id if model else None
         if path.rstrip("/") == "models" and model_id is None:
-            return self._candidates_for_request(path, None), False
+            return self._candidates_for_request(path, None, estimate_tokens=estimate_tokens), False
 
         if self.vip_service.is_vip_eligible(model):
             ServerRepository.demote_expired_cooldowns(self.vip_service.cooldown_seconds, model.id)
 
         if is_vip_channel and self.vip_service.is_vip_eligible(model):
-            return self.vip_service.select_candidates(model)
-        return self._candidates_for_request(path, model_id, vip=False), False
+            return self.vip_service.select_candidates(model, estimate_tokens=estimate_tokens)
+        return self._candidates_for_request(path, model_id, vip=False, estimate_tokens=estimate_tokens), False
 
-    def _after_finish(self, served_as_vip: bool, model) -> None:
+    def _after_finish(self, served_as_vip: bool, model, estimate_tokens: int = 0) -> None:
         if served_as_vip and model is not None:
-            self.vip_service.maybe_scale_down(model)
+            self.vip_service.maybe_scale_down(model, estimate_tokens=estimate_tokens)
 
     def _route_with_retry(self, django_request, path, headers, body, record, user_agent, candidates, context, served_as_vip, model, is_stream):
         disconnect_scope = self._open_disconnect_scope(django_request, is_stream)
@@ -521,7 +523,7 @@ class ProxyService:
             attempt_count=attempts,
             router_result=getattr(context, "router_result", None),
         )
-        self._after_finish(served_as_vip, model)
+        self._after_finish(served_as_vip, model, estimate_tokens=record.estimate_tokens)
         self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, status_code, content)
         return _RouteAttemptResult(response=self._response_from_upstream(upstream, content, status_code))
 
@@ -564,7 +566,7 @@ class ProxyService:
             final_prefix_cache=cached_tokens,
             router_result=getattr(context, "router_result", None),
         )
-        self._after_finish(served_as_vip, model)
+        self._after_finish(served_as_vip, model, estimate_tokens=record.estimate_tokens)
         return _RouteAttemptResult(response=self._response_from_upstream(upstream, content, status_code))
 
     def _handle_read_timeout(self, record, server, disconnect_scope, state: _RetryState, served_as_vip, model):
@@ -598,7 +600,7 @@ class ProxyService:
             attempt_count=state.attempts,
             router_result=getattr(context, "router_result", None),
         )
-        self._after_finish(served_as_vip, model)
+        self._after_finish(served_as_vip, model, estimate_tokens=record.estimate_tokens)
         error_type = "gateway_timeout_error" if status == 504 else "server_error"
         self._maybe_delay_opencode_failure(user_agent, status)
         return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
@@ -661,7 +663,7 @@ class ProxyService:
             finally:
                 upstream.close()
                 self._decrement_workload(server)
-                self._after_finish(served_as_vip, model)
+                self._after_finish(served_as_vip, model, estimate_tokens=record.estimate_tokens)
 
         response = StreamingHttpResponse(generate(), status=200, content_type="text/event-stream")
         response["Cache-Control"] = "no-cache"
@@ -670,7 +672,7 @@ class ProxyService:
 
     def _client_closed_response(self, record, served_as_vip: bool = False, model=None):
         RequestRepository.finish(record, 499, "Client Closed Request", task_status="agent_disconnected")
-        self._after_finish(served_as_vip, model)
+        self._after_finish(served_as_vip, model, estimate_tokens=record.estimate_tokens)
         return HttpResponse(status=499)
 
     def _maybe_delay_opencode_failure(self, user_agent: str | None, status_code: int) -> None:

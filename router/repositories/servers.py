@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from django.db.models import F, Value
+from django.db.models import F, Q, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
 
@@ -11,7 +11,7 @@ from router.models import Server
 
 class ServerRepository:
     @staticmethod
-    def list_by_model_id(model_id: int | None, vip: bool | None = None) -> list[Server]:
+    def list_by_model_id(model_id: int | None, vip: bool | None = None, estimate_tokens: int = 0) -> list[Server]:
         """Return routable servers: online + (closed or cooldown-expired open/half_open).
 
         ``vip``: when ``True`` only VIP servers, when ``False`` only non-VIP servers,
@@ -27,6 +27,10 @@ class ServerRepository:
             queryset = queryset.filter(vip=True)
         elif vip is False:
             queryset = queryset.filter(vip=False)
+            
+        if estimate_tokens > 0:
+            queryset = queryset.filter(Q(context_window__gte=estimate_tokens) | Q(context_window__isnull=True))
+            
         servers = list(queryset.order_by("id"))
         return ServerRepository._filter_routable(servers, now)
 

@@ -30,6 +30,7 @@ class RequestRepository:
         is_stream: bool,
         user_agent: str | None,
         user_ip_id: int = 1,
+        estimate_tokens: int = 0,
     ) -> RequestRecord:
         return RequestRecord.objects.create(
             user_ip_id=user_ip_id,
@@ -45,6 +46,7 @@ class RequestRepository:
             prefix_cache=0.0,
             final_prefix_cache=0,
             last_match=None,
+            estimate_tokens=estimate_tokens,
         )
 
     @staticmethod
@@ -56,6 +58,7 @@ class RequestRepository:
         status_code: int,
         fail_reason: str,
         user_ip_id: int = 1,
+        estimate_tokens: int = 0,
     ) -> RequestRecord:
         now = timezone.now()
         return RequestRecord.objects.create(
@@ -76,6 +79,7 @@ class RequestRepository:
             prefix_cache=0.0,
             final_prefix_cache=0,
             last_match=None,
+            estimate_tokens=estimate_tokens,
         )
 
     @staticmethod

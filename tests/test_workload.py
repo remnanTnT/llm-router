@@ -94,7 +94,7 @@ def test_workload_decremented_after_normal_success(monkeypatch):
     django_request.META = {"QUERY_STRING": ""}
     django_request.client_disconnect_tracker = None
 
-    parsed = MagicMock(stream=False, body=b"{}", model_name="m")
+    parsed = MagicMock(stream=False, body=b"{}", model_name="m", estimated_input_tokens=0)
     service.forward(django_request, "chat/completions", parsed, None, None, None)
 
     server.refresh_from_db()
@@ -121,7 +121,7 @@ def test_workload_decremented_after_normal_request_exception(monkeypatch):
     django_request.META = {"QUERY_STRING": ""}
     django_request.client_disconnect_tracker = None
 
-    parsed = MagicMock(stream=False, body=b"{}", model_name="m")
+    parsed = MagicMock(stream=False, body=b"{}", model_name="m", estimated_input_tokens=0)
     service.forward(django_request, "chat/completions", parsed, None, None, None)
 
     server.refresh_from_db()
@@ -148,7 +148,7 @@ def test_workload_decremented_after_stream_error_response(monkeypatch):
     django_request.META = {"QUERY_STRING": ""}
     django_request.client_disconnect_tracker = None
 
-    parsed = MagicMock(stream=True, body=b"{}", model_name="m")
+    parsed = MagicMock(stream=True, body=b"{}", model_name="m", estimated_input_tokens=0)
     service.forward(django_request, "chat/completions", parsed, None, None, None)
 
     server.refresh_from_db()
@@ -179,7 +179,7 @@ def test_workload_kept_until_stream_generator_completes(monkeypatch):
     django_request.META = {"QUERY_STRING": ""}
     django_request.client_disconnect_tracker = None
 
-    parsed = MagicMock(stream=True, body=b"{}", model_name="m")
+    parsed = MagicMock(stream=True, body=b"{}", model_name="m", estimated_input_tokens=0)
     response = service.forward(django_request, "chat/completions", parsed, None, None, None)
 
     server.refresh_from_db()
