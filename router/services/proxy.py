@@ -5,12 +5,11 @@ import json
 import random
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from django.http import HttpResponse, StreamingHttpResponse
 import requests
-
-import os
 
 from router.config import APP_CONFIG
 from router.repositories.models import ModelRepository
@@ -27,6 +26,32 @@ from router.route_algorithm.least_connection import LeastConnectionServerChooser
 from router.utils.errors import error_payload, timeout_sse_event
 from router.utils.headers import filter_request_headers, filter_response_headers
 from router.utils.sse import parse_sse_usage
+
+
+@dataclass
+class _DisconnectScope:
+    disconnect_event: threading.Event
+    stop_event: threading.Event
+    upstream_client: CancellableUpstreamRequest | None = None
+    watcher: DisconnectWatcher | None = None
+
+
+@dataclass
+class _RetryState:
+    attempted_server_ids: set[int] = field(default_factory=set)
+    attempts: int = 0
+    last_server: Any = None
+    last_status: int = 502
+    last_reason: str = "Bad Gateway"
+
+
+@dataclass
+class _RouteAttemptResult:
+    response: Any = None
+    should_retry: bool = False
+    candidates: Any = None
+    model: Any = None
+    body: bytes | None = None
 
 
 class ProxyService:
@@ -132,42 +157,10 @@ class ProxyService:
 
     def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None, is_vip_channel: bool = False):
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
-        
-        user_ip_id = 1 
-        record = RequestRepository.create_processing(
-            ip_id, model.id if model else 0, parsed.stream, user_agent, user_ip_id=user_ip_id
-        )
+        record = self._create_processing_record(ip_id, model, parsed, user_agent)
+        context = self._selection_context(record, ip_id, model, parsed, path, django_request.method)
+        model, router_result = self._resolve_auto_model(parsed, record, context, model)
 
-        model_id = model.id if model else None
-        context = ServerSelectionContext(
-            request_id=record.id,
-            ip_id=ip_id,
-            model_id=model_id,
-            model_name=parsed.model_name,
-            path=path,
-            method=django_request.method,
-            is_stream=parsed.stream,
-            body=parsed.body,
-        )
-
-        router_result = None
-        if parsed.model_name == "auto":
-            model, router_result = self._get_auto_route_model(parsed.body, record, context)
-            if model:
-                record.model_id = model.id
-                record.save(update_fields=["model_id"])
-                parsed.model_name = model.model_name
-                context.model_id = model.id
-                context.model_name = model.model_name
-                # Update body with actual model name if it was "auto"
-                try:
-                    body_data = json.loads(parsed.body.decode("utf-8"))
-                    body_data["model"] = model.model_name
-                    parsed.body = json.dumps(body_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-                    context.body = parsed.body
-                except Exception:
-                    pass
-        
         candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel)
         if served_as_vip:
             record.user_ip_id = 2
@@ -178,9 +171,51 @@ class ProxyService:
             return self._handle_no_candidates(record, user_agent)
 
         return self._route_with_retry(
-            django_request, path, headers, parsed.body, record, parsed.model_name,
-            user_agent, candidates, context, served_as_vip, model, parsed.stream
+            django_request, path, headers, parsed.body, record, user_agent,
+            candidates, context, served_as_vip, model, parsed.stream
         )
+
+    @staticmethod
+    def _create_processing_record(ip_id: int | None, model, parsed, user_agent: str | None):
+        user_ip_id = 1
+        return RequestRepository.create_processing(
+            ip_id,
+            model.id if model else 0,
+            parsed.stream,
+            user_agent,
+            user_ip_id=user_ip_id,
+        )
+
+    @staticmethod
+    def _selection_context(record, ip_id: int | None, model, parsed, path: str, method: str) -> ServerSelectionContext:
+        return ServerSelectionContext(
+            request_id=record.id,
+            ip_id=ip_id,
+            model_id=model.id if model else None,
+            model_name=parsed.model_name,
+            path=path,
+            method=method,
+            is_stream=parsed.stream,
+            body=parsed.body,
+        )
+
+    def _resolve_auto_model(self, parsed, record, context: ServerSelectionContext, model):
+        if parsed.model_name != "auto":
+            return model, None
+
+        model, router_result = self._get_auto_route_model(parsed.body, record, context)
+        if model:
+            self._apply_resolved_model(parsed, record, context, model)
+        return model, router_result
+
+    def _apply_resolved_model(self, parsed, record, context: ServerSelectionContext, model) -> None:
+        record.model_id = model.id
+        record.save(update_fields=["model_id"])
+        parsed.model_name = model.model_name
+        parsed.body = self._update_body_model(parsed.body, model.model_name)
+        context.model_id = model.id
+        context.model_name = model.model_name
+        context.body = parsed.body
 
     def _build_url(self, base_url: str, path: str, query_string: str) -> str:
         url = base_url.rstrip("/") + "/" + path
@@ -211,156 +246,362 @@ class ProxyService:
         if served_as_vip and model is not None:
             self.vip_service.maybe_scale_down(model)
 
-    def _route_with_retry(self, django_request, path, headers, body, record, model_name, user_agent, candidates, context, served_as_vip, model, is_stream):
-        disconnect_event = threading.Event()
-        stop_event = threading.Event()
-        upstream_client = None
-        watcher = None
-
-        if not is_stream:
-            upstream_client = CancellableUpstreamRequest()
-            tracker = getattr(django_request, "client_disconnect_tracker", None)
-            if tracker:
-                watcher = DisconnectWatcher(
-                    tracker,
-                    disconnect_event,
-                    stop_event,
-                    upstream_client.cancel,
-                    self.client_disconnect_check_interval,
-                )
-                watcher.start()
-
-        attempted_server_ids: set[int] = set()
-        attempts = 0
-        last_server = None
-        last_status = 502
-        last_reason = "Bad Gateway"
-        
-        # We use a while True and internal break/continue to handle dynamic candidates (Flash switch)
-        # while keeping the global max attempts limit.
+    def _route_with_retry(self, django_request, path, headers, body, record, user_agent, candidates, context, served_as_vip, model, is_stream):
+        disconnect_scope = self._open_disconnect_scope(django_request, is_stream)
+        state = _RetryState()
         try:
-            while attempts < self.max_attempts_per_request:
-                # If we've tried all candidates for the CURRENT model, but still have attempts,
-                # this normally means we fail. But with model switching, we might have new candidates.
-                server = self.chooser.choose(candidates, context, attempted_server_ids)
+            while state.attempts < self.max_attempts_per_request:
+                server = self.chooser.choose(candidates, context, state.attempted_server_ids)
                 if server is None:
                     break
-                
-                last_server = server
-                attempted_server_ids.add(server.id)
-                attempts += 1
-                upstream_url = self._build_url(server.base_url, path, django_request.META.get("QUERY_STRING", ""))
-                target_pod_ip = self._target_identifier(server)
-                
-                RequestRepository.record_attempt(
+
+                result = self._route_single_attempt(
+                    django_request,
+                    path,
+                    headers,
+                    body,
                     record,
-                    target_pod_ip,
-                    attempts,
-                    getattr(context, "prefix_cache", None),
-                    getattr(context, "last_match", None),
+                    user_agent,
+                    context,
+                    served_as_vip,
+                    model,
+                    is_stream,
+                    disconnect_scope,
+                    state,
+                    server,
                 )
-                self._increment_workload(server)
-                workload_handed_off = False
-                try:
-                    upstream = self._perform_request(django_request, server, upstream_url, headers, body, is_stream, upstream_client)
 
-                    if not is_stream:
-                        content = upstream.content
-                    if disconnect_event.is_set():
-                        return self._client_closed_response(record, served_as_vip, model)
+                if result.response is not None:
+                    return result.response
+                candidates = result.candidates if result.candidates is not None else candidates
+                model = result.model if result.model is not None else model
+                body = result.body if result.body is not None else body
+                if result.should_retry:
+                    continue
+                break
 
-                    status_code = upstream.status_code
-                    reason = upstream.reason or ""
-                    last_status = status_code
-                    last_reason = reason
-                    
-                    self._log_attempt(record.id, attempts, server, "status", False, status=status_code)
-                    if status_code >= 500:
-                        self._mark_unhealthy(server)
-
-                    self._maybe_log_multi_server_route(record.id, attempted_server_ids, server.id)
-                    self._maybe_delay_opencode_failure(user_agent, status_code)
-                    self._notify_chooser_response(server, context, status_code)
-
-                    if status_code >= 400:
-                        if is_stream:
-                            content = upstream.content
-                            upstream.close()
-                        
-                        fail_reason = self._extract_fail_reason(content, reason)
-                        
-                        if self._check_context_overflow(status_code, model, fail_reason) and model.model_name != "DeepSeek-V4-Flash":
-                            flash_model = ModelRepository.get_by_name("DeepSeek-V4-Flash")
-                            if flash_model:
-                                append_request_log(record.id, f"Context overflow detected ({fail_reason}), switching to DeepSeek-V4-Flash")
-                                model = flash_model
-                                candidates, _ = self._select_candidates(path, model, served_as_vip)
-                                context.model_id = model.id
-                                context.model_name = model.model_name
-                                body = self._update_body_model(body, model.model_name)
-                                context.body = body
-                                if candidates:
-                                    continue 
-
-                        RequestRepository.finish(record, status_code, fail_reason, 0, 0, target_pod_ip, model.id if model else None, attempt_count=attempts, router_result=getattr(context, "router_result", None))
-                        self._after_finish(served_as_vip, model)
-                        self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, status_code, content)
-                        
-                        response = HttpResponse(content, status=status_code)
-                        for key, value in filter_response_headers(dict(upstream.headers)).items():
-                            response[key] = value
-                        return response
-
-                    if not is_stream:
-                        input_tokens, output_tokens, cached_tokens = self._parse_json_usage(content)
-                        RequestRepository.finish(record, status_code, reason, input_tokens, output_tokens, target_pod_ip, model.id if model else None, attempt_count=attempts, final_prefix_cache=cached_tokens, router_result=getattr(context, "router_result", None))
-                        self._after_finish(served_as_vip, model)
-                        
-                        response = HttpResponse(content, status=status_code)
-                        for key, value in filter_response_headers(dict(upstream.headers)).items():
-                            response[key] = value
-                        return response
-
-                    workload_handed_off = True
-                    # Use the updated model_name (real model) for recording
-                    return self._stream_success(django_request, upstream, record, server, context.model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model)
-
-                except requests.exceptions.ReadTimeout:
-                    if disconnect_event.is_set():
-                        return self._client_closed_response(record, served_as_vip, model)
-                    last_status = 504
-                    last_reason = "Gateway Timeout"
-                    self._log_attempt(record.id, attempts, server, "read_timeout", False, reason="ReadTimeout")
-                    break
-                except requests.RequestException as exc:
-                    if disconnect_event.is_set():
-                        return self._client_closed_response(record, served_as_vip, model)
-                    last_status = 502
-                    last_reason = "Bad Gateway"
-                    retry = attempts < self.max_attempts_per_request
-                    self._mark_unhealthy(server)
-                    self._log_attempt(record.id, attempts, server, exc.__class__.__name__, retry, reason=str(exc))
-                    if retry:
-                        continue
-                    break
-                finally:
-                    if not workload_handed_off:
-                        self._decrement_workload(server)
-
-            self._maybe_log_multi_server_route(record.id, attempted_server_ids, last_server.id if last_server else None)
-            status = 504 if last_status == 504 else 502
-            message = "request timeout" if status == 504 else "502 Bad Gateway"
-            RequestRepository.finish(record, status, message, target_pod_ip=self._target_identifier(last_server) if last_server else None, attempt_count=attempts, router_result=getattr(context, "router_result", None))
-            self._after_finish(served_as_vip, model)
-            error_type = "gateway_timeout_error" if status == 504 else "server_error"
-            self._maybe_delay_opencode_failure(user_agent, status)
-            return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
+            return self._retry_failure_response(record, state, served_as_vip, model, user_agent, context)
         finally:
-            stop_event.set()
-            if upstream_client:
-                upstream_client.close()
-            if watcher:
-                watcher.join(timeout=0.1)
+            self._close_disconnect_scope(disconnect_scope)
+
+    def _open_disconnect_scope(self, django_request, is_stream: bool) -> _DisconnectScope:
+        scope = _DisconnectScope(threading.Event(), threading.Event())
+        if is_stream:
+            return scope
+
+        scope.upstream_client = CancellableUpstreamRequest()
+        tracker = getattr(django_request, "client_disconnect_tracker", None)
+        if tracker:
+            scope.watcher = DisconnectWatcher(
+                tracker,
+                scope.disconnect_event,
+                scope.stop_event,
+                scope.upstream_client.cancel,
+                self.client_disconnect_check_interval,
+            )
+            scope.watcher.start()
+        return scope
+
+    @staticmethod
+    def _close_disconnect_scope(scope: _DisconnectScope) -> None:
+        scope.stop_event.set()
+        if scope.upstream_client:
+            scope.upstream_client.close()
+        if scope.watcher:
+            scope.watcher.join(timeout=0.1)
+
+    def _route_single_attempt(
+        self,
+        django_request,
+        path,
+        headers,
+        body,
+        record,
+        user_agent,
+        context,
+        served_as_vip,
+        model,
+        is_stream,
+        disconnect_scope,
+        state,
+        server,
+    ):
+        upstream_url, target_pod_ip = self._start_attempt(django_request, path, record, context, state, server)
+        workload_handed_off = False
+        try:
+            upstream = self._perform_request(
+                django_request,
+                server,
+                upstream_url,
+                headers,
+                body,
+                is_stream,
+                disconnect_scope.upstream_client,
+            )
+            result = self._handle_upstream_response(
+                django_request,
+                upstream,
+                server,
+                upstream_url,
+                headers,
+                body,
+                record,
+                user_agent,
+                context,
+                served_as_vip,
+                model,
+                is_stream,
+                disconnect_scope,
+                state,
+                target_pod_ip,
+            )
+            workload_handed_off = result.response is not None and is_stream and state.last_status < 400
+            return result
+        except requests.exceptions.ReadTimeout:
+            return self._handle_read_timeout(record, server, disconnect_scope, state, served_as_vip, model)
+        except requests.RequestException as exc:
+            return self._handle_request_exception(record, server, exc, disconnect_scope, state, served_as_vip, model)
+        finally:
+            if not workload_handed_off:
+                self._decrement_workload(server)
+
+    def _start_attempt(self, django_request, path, record, context, state: _RetryState, server):
+        state.last_server = server
+        state.attempted_server_ids.add(server.id)
+        state.attempts += 1
+        upstream_url = self._build_url(server.base_url, path, django_request.META.get("QUERY_STRING", ""))
+        target_pod_ip = self._target_identifier(server)
+        RequestRepository.record_attempt(
+            record,
+            target_pod_ip,
+            state.attempts,
+            getattr(context, "prefix_cache", None),
+            getattr(context, "last_match", None),
+        )
+        self._increment_workload(server)
+        return upstream_url, target_pod_ip
+
+    def _handle_upstream_response(
+        self,
+        django_request,
+        upstream,
+        server,
+        upstream_url,
+        headers,
+        body,
+        record,
+        user_agent,
+        context,
+        served_as_vip,
+        model,
+        is_stream,
+        disconnect_scope,
+        state,
+        target_pod_ip,
+    ):
+        content = upstream.content if not is_stream else b""
+        if disconnect_scope.disconnect_event.is_set():
+            return _RouteAttemptResult(response=self._client_closed_response(record, served_as_vip, model))
+
+        status_code = upstream.status_code
+        reason = upstream.reason or ""
+        state.last_status = status_code
+        state.last_reason = reason
+        self._record_upstream_status(record, state, server, user_agent, context, status_code)
+
+        if status_code >= 400:
+            return self._handle_upstream_error(
+                django_request,
+                upstream,
+                upstream_url,
+                headers,
+                body,
+                content,
+                record,
+                context,
+                served_as_vip,
+                model,
+                is_stream,
+                status_code,
+                reason,
+                target_pod_ip,
+                state.attempts,
+            )
+
+        if not is_stream:
+            return self._normal_success_response(
+                upstream,
+                content,
+                record,
+                model,
+                context,
+                status_code,
+                reason,
+                target_pod_ip,
+                state.attempts,
+                served_as_vip,
+            )
+
+        response = self._stream_success(
+            django_request,
+            upstream,
+            record,
+            server,
+            context.model_name,
+            status_code,
+            reason,
+            target_pod_ip,
+            state.attempts,
+            context,
+            served_as_vip,
+            model,
+        )
+        return _RouteAttemptResult(response=response)
+
+    def _record_upstream_status(self, record, state: _RetryState, server, user_agent, context, status_code: int) -> None:
+        self._log_attempt(record.id, state.attempts, server, "status", False, status=status_code)
+        if status_code >= 500:
+            self._mark_unhealthy(server)
+        self._maybe_log_multi_server_route(record.id, state.attempted_server_ids, server.id)
+        self._maybe_delay_opencode_failure(user_agent, status_code)
+        self._notify_chooser_response(server, context, status_code)
+
+    def _handle_upstream_error(
+        self,
+        django_request,
+        upstream,
+        upstream_url,
+        headers,
+        body,
+        content,
+        record,
+        context,
+        served_as_vip,
+        model,
+        is_stream,
+        status_code,
+        reason,
+        target_pod_ip,
+        attempts,
+    ):
+        if is_stream:
+            content = upstream.content
+            upstream.close()
+
+        fail_reason = self._extract_fail_reason(content, reason)
+        switched_model, switched_candidates, switched_body = self._context_overflow_switch(
+            record,
+            context,
+            context.path,
+            served_as_vip,
+            body,
+            model,
+            status_code,
+            fail_reason,
+        )
+        if switched_model is not None:
+            model = switched_model
+            body = switched_body
+            if switched_candidates:
+                return _RouteAttemptResult(
+                    should_retry=True,
+                    candidates=switched_candidates,
+                    model=model,
+                    body=body,
+                )
+
+        RequestRepository.finish(
+            record,
+            status_code,
+            fail_reason,
+            0,
+            0,
+            target_pod_ip,
+            model.id if model else None,
+            attempt_count=attempts,
+            router_result=getattr(context, "router_result", None),
+        )
+        self._after_finish(served_as_vip, model)
+        self._log_error_detail(record.id, django_request.method, upstream_url, headers, body, status_code, content)
+        return _RouteAttemptResult(response=self._response_from_upstream(upstream, content, status_code))
+
+    @staticmethod
+    def _response_from_upstream(upstream, content: bytes, status_code: int):
+        response = HttpResponse(content, status=status_code)
+        for key, value in filter_response_headers(dict(upstream.headers)).items():
+            response[key] = value
+        return response
+
+    def _context_overflow_switch(self, record, context, path, served_as_vip, body, model, status_code, fail_reason):
+        if not model or model.model_name == "DeepSeek-V4-Flash":
+            return None, None, body
+        if not self._check_context_overflow(status_code, model, fail_reason):
+            return None, None, body
+
+        flash_model = ModelRepository.get_by_name("DeepSeek-V4-Flash")
+        if not flash_model:
+            return None, None, body
+
+        append_request_log(record.id, f"Context overflow detected ({fail_reason}), switching to DeepSeek-V4-Flash")
+        candidates, _ = self._select_candidates(path, flash_model, served_as_vip)
+        body = self._update_body_model(body, flash_model.model_name)
+        context.model_id = flash_model.id
+        context.model_name = flash_model.model_name
+        context.body = body
+        return flash_model, candidates, body
+
+    def _normal_success_response(self, upstream, content, record, model, context, status_code, reason, target_pod_ip, attempts, served_as_vip):
+        input_tokens, output_tokens, cached_tokens = self._parse_json_usage(content)
+        RequestRepository.finish(
+            record,
+            status_code,
+            reason,
+            input_tokens,
+            output_tokens,
+            target_pod_ip,
+            model.id if model else None,
+            attempt_count=attempts,
+            final_prefix_cache=cached_tokens,
+            router_result=getattr(context, "router_result", None),
+        )
+        self._after_finish(served_as_vip, model)
+        return _RouteAttemptResult(response=self._response_from_upstream(upstream, content, status_code))
+
+    def _handle_read_timeout(self, record, server, disconnect_scope, state: _RetryState, served_as_vip, model):
+        if disconnect_scope.disconnect_event.is_set():
+            return _RouteAttemptResult(response=self._client_closed_response(record, served_as_vip, model))
+        state.last_status = 504
+        state.last_reason = "Gateway Timeout"
+        self._log_attempt(record.id, state.attempts, server, "read_timeout", False, reason="ReadTimeout")
+        return _RouteAttemptResult()
+
+    def _handle_request_exception(self, record, server, exc, disconnect_scope, state: _RetryState, served_as_vip, model):
+        if disconnect_scope.disconnect_event.is_set():
+            return _RouteAttemptResult(response=self._client_closed_response(record, served_as_vip, model))
+        state.last_status = 502
+        state.last_reason = "Bad Gateway"
+        retry = state.attempts < self.max_attempts_per_request
+        self._mark_unhealthy(server)
+        self._log_attempt(record.id, state.attempts, server, exc.__class__.__name__, retry, reason=str(exc))
+        return _RouteAttemptResult(should_retry=retry)
+
+    def _retry_failure_response(self, record, state: _RetryState, served_as_vip, model, user_agent, context):
+        final_server_id = state.last_server.id if state.last_server else None
+        self._maybe_log_multi_server_route(record.id, state.attempted_server_ids, final_server_id)
+        status = 504 if state.last_status == 504 else 502
+        message = "request timeout" if status == 504 else "502 Bad Gateway"
+        RequestRepository.finish(
+            record,
+            status,
+            message,
+            target_pod_ip=self._target_identifier(state.last_server),
+            attempt_count=state.attempts,
+            router_result=getattr(context, "router_result", None),
+        )
+        self._after_finish(served_as_vip, model)
+        error_type = "gateway_timeout_error" if status == 504 else "server_error"
+        self._maybe_delay_opencode_failure(user_agent, status)
+        return HttpResponse(json.dumps(error_payload(message, error_type)), status=status, content_type="application/json")
 
     def _handle_normal(self, django_request, server, upstream_url, headers, body, upstream_client):
         req_headers = {**headers}
@@ -387,7 +628,7 @@ class ProxyService:
             timeout=self.stream_timeout,
         )
 
-    def _stream_success(self, django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, attempted_server_ids, context, served_as_vip, model):
+    def _stream_success(self, django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, context, served_as_vip, model):
         def generate():
             chunks: list[bytes] = []
             try:
