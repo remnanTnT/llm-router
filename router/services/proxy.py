@@ -299,12 +299,13 @@ class ProxyService:
         return ServerSelectionContext(
             request_id=record.id,
             ip_id=ip_id,
-            model_id=model.id if model else None,
-            model_name=parsed.model_name,
+            model_id=model.id if model else 0,
+            model_name=model.model_name if model else None,
             path=path,
             method=method,
             is_stream=parsed.stream,
             body=parsed.body,
+            origin_model_name=parsed.model_name,
         )
 
     def _resolve_auto_model(self, parsed, record, context: ServerSelectionContext, model):
@@ -683,6 +684,8 @@ class ProxyService:
         return response
 
     def _context_overflow_switch(self, record, context, path, served_as_vip, body, model, status_code, fail_reason):
+        if context.origin_model_name != "auto":
+            return None, None, body
         if not model or model.model_name == "DeepSeek-V4-Flash":
             return None, None, body
         if not self._check_context_overflow(status_code, model, fail_reason):
