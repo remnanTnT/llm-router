@@ -112,7 +112,7 @@ class ProxyService:
             routing_servers.extend(ServerRepository.list_by_model_id(rm.id, vip=False, estimate_tokens=0))
         
         if not routing_servers:
-            return self._get_default_model(), "no_routing_servers"
+            return self._get_default_model(), self._routing_unavailable_result()
 
         server = self.chooser.choose(routing_servers, context, set()) or random.choice(routing_servers)
         
@@ -161,8 +161,15 @@ class ProxyService:
     def _routing_exception_result(self, exc: Exception, status_code: int | None = None) -> str:
         return self._format_router_result("routing_error", status_code, str(exc))
 
+    def _routing_unavailable_result(self) -> str:
+        return self._format_router_result(
+            "routing_failed",
+            "no_available_server",
+            "no available server for routing request",
+        )
+
     @staticmethod
-    def _format_router_result(prefix: str, status_code: int | None, message: str) -> str:
+    def _format_router_result(prefix: str, status_code: int | str | None, message: str) -> str:
         code = str(status_code) if status_code is not None else "exception"
         return f"{prefix}:{code}:{message}"[:100]
 
