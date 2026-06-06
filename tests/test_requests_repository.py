@@ -48,6 +48,34 @@ def test_record_attempt_clears_last_match_when_no_match():
     assert record.last_match is None
 
 
+def test_record_model_choosing_latency_persists_milliseconds():
+    record = RequestRepository.create_processing(
+        ip_id=1,
+        model_id=7,
+        is_stream=False,
+        user_agent="pytest",
+    )
+
+    RequestRepository.record_model_choosing_latency(record, 123)
+
+    record.refresh_from_db()
+    assert record.model_choosing_latency == 123
+
+
+def test_record_model_choosing_latency_clamps_negative_values():
+    record = RequestRepository.create_processing(
+        ip_id=1,
+        model_id=7,
+        is_stream=False,
+        user_agent="pytest",
+    )
+
+    RequestRepository.record_model_choosing_latency(record, -5)
+
+    record.refresh_from_db()
+    assert record.model_choosing_latency == 0
+
+
 def test_create_blocked_status_uses_rfc_phrase():
     record = RequestRepository.create_blocked(
         ip_id=1,
