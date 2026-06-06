@@ -68,26 +68,9 @@ def test_unknown_model_returns_400():
 
 
 @pytest.mark.django_db
-def test_small_unknown_model_uses_routing_server(monkeypatch):
+def test_small_unknown_model_returns_400_even_with_routing_server():
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
-
-    def fake_request(self_inner, method, url, **kwargs):
-        assert url == "http://router.example/chat/completions"
-        data = json.loads(kwargs["data"].decode("utf-8"))
-        assert data["model"] == "router-model"
-        assert data["chat_template_kwargs"] == {"enable_thinking": False}
-        upstream = type("Upstream", (), {})()
-        upstream.status_code = 200
-        upstream.reason = "OK"
-        upstream.content = b"{}"
-        upstream.headers = {}
-        return upstream
-
-    monkeypatch.setattr(
-        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
-        fake_request,
-    )
 
     response = Client().post(
         "/v1/chat/completions",
@@ -95,7 +78,8 @@ def test_small_unknown_model_uses_routing_server(monkeypatch):
         content_type="application/json",
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "Model unknown-model is not supported."
 
 
 @pytest.mark.django_db

@@ -234,10 +234,6 @@ class ProxyService:
     def _should_route_small_request(self, parsed) -> bool:
         return int(parsed.estimated_input_tokens or 0) < self.SMALL_REQUEST_ROUTING_TOKEN_LIMIT
 
-    @classmethod
-    def can_route_small_request(cls, estimate_tokens: int = 0) -> bool:
-        return cls._get_small_request_routing_model(estimate_tokens) is not None
-
     @staticmethod
     def _get_small_request_routing_model(estimate_tokens: int = 0):
         for routing_model in ModelRepository.get_routing_models():
