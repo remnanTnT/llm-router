@@ -18,6 +18,14 @@ The router expects these existing tables:
 
 All datetime columns should use `TIMESTAMPTZ`. The router runs with `TIME_ZONE = Asia/Shanghai` and sets the database connection time zone to `Asia/Shanghai`, so request lifecycle times such as `send_time` and `end_time` are saved and read in Beijing time.
 
+## `ips` Table
+
+```sql
+ALTER TABLE ips ADD COLUMN vip BOOLEAN NOT NULL DEFAULT FALSE;
+```
+
+`vip` is admin-managed. Set it to `TRUE` for client IPs that may send traffic to `server.vip_port`; non-VIP IPs that use the VIP port receive HTTP 503 with the configured normal port in the error message.
+
 ## `servers` Table
 
 ```sql
@@ -53,7 +61,7 @@ ALTER TABLE models ADD COLUMN vip INTEGER NULL;
 ALTER TABLE models ADD COLUMN deprecation VARCHAR(500) NULL;
 ```
 
-`vip` is admin-managed. Set it to a positive integer to enable VIP routing for that model: it is the per-active-VIP-server workload threshold above which the router promotes another normal server into the VIP pool. `NULL` or `0` disables VIP routing for the model — VIP-port traffic for it is served from the normal pool.
+`vip` is admin-managed. Set it to a positive integer to enable VIP routing for that model: it is the per-active-VIP-server workload threshold above which the router promotes another normal server into the VIP pool. `NULL` or `0` disables VIP routing for the model — VIP-port traffic from VIP-authorized IPs for it is served from the normal pool.
 
 `deprecation` is admin-managed. If it is not `NULL`, the router will return a 400 error with the value of this column as the error message, effectively disabling the model.
 

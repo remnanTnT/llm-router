@@ -33,6 +33,7 @@ A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one 
 
 - **VIP Channel**
   - Second listening port (`server.vip_port`, default 8008 prod / 9001 test) routes traffic to a dedicated VIP server pool for VIP-eligible models (`models.vip > 0` is the workload threshold)
+  - Client eligibility is controlled by `ips.vip`; non-VIP IPs on the VIP port receive HTTP 503 with `Port <vip_port> is closed, please use port <http_port>`
   - Router-managed `servers.vip` and `servers.vip_cooldown` track pool membership; non-VIP traffic never lands on VIP servers
   - Scale-up: on each VIP request, if `(current_load + 1) / active_vip_servers > threshold`, cancels a cooling cooldown if any, otherwise promotes the least-loaded normal server (subject to `vip.min_normal_servers` floor, default 2)
   - Scale-down: on each VIP request finish, if projected average drops below threshold, cools the least-loaded VIP server; if VIP load reaches zero, cools all active VIP servers; cooldowns demote after `vip.cooldown_seconds` (default 300)

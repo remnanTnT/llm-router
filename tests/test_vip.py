@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import timedelta
 
 from django.core.management import call_command
-from django.test import RequestFactory
+from django.test import Client, RequestFactory
 from django.utils import timezone
 
 from router.config import APP_CONFIG
-from router.models import Model, RequestRecord, Server
+from router.models import IP, Model, RequestRecord, Server
 from router.repositories.requests import RequestRepository
 from router.repositories.servers import ServerRepository
 from router.services.proxy import ProxyService
@@ -433,6 +434,50 @@ class TestVIPChannelDetection:
     def test_missing_port_is_not_vip(self, monkeypatch):
         monkeypatch.setitem(APP_CONFIG.setdefault("server", {}), "vip_port", 8008)
         assert _is_vip_channel(self._request_with_port(None)) is False
+
+
+# -------- VIP-port IP admission --------
+
+
+class TestVIPPortIPGate:
+    def test_non_vip_ip_gets_503_on_vip_port(self, monkeypatch):
+        server_config = APP_CONFIG.setdefault("server", {})
+        monkeypatch.setitem(server_config, "vip_port", 8008)
+        monkeypatch.setitem(server_config, "bind", "0.0.0.0:8001")
+
+        response = Client().post(
+            "/v1/chat/completions",
+            data=json.dumps({"model": "any-model"}),
+            content_type="application/json",
+            SERVER_PORT="8008",
+            REMOTE_ADDR="10.10.10.10",
+        )
+
+        message = "Port 8008 is closed, please use port 8001"
+        assert response.status_code == 503
+        assert response.json()["error"]["message"] == message
+        assert IP.objects.get(ip="10.10.10.10").vip is False
+
+        record = RequestRecord.objects.last()
+        assert record.status == "503 Service Unavailable"
+        assert record.fail_reason == message
+
+    def test_vip_ip_can_use_vip_port(self, monkeypatch):
+        server_config = APP_CONFIG.setdefault("server", {})
+        monkeypatch.setitem(server_config, "vip_port", 8008)
+        monkeypatch.setitem(server_config, "bind", "0.0.0.0:8001")
+        IP.objects.create(ip="10.10.10.11", concurrent_multiplier=1.0, vip=True)
+
+        response = Client().post(
+            "/v1/chat/completions",
+            data=json.dumps({"model": "unknown-model"}),
+            content_type="application/json",
+            SERVER_PORT="8008",
+            REMOTE_ADDR="10.10.10.11",
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["message"] == "Model unknown-model is not supported."
 
 
 # -------- release_vip_cooldowns command --------

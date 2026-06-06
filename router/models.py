@@ -14,6 +14,7 @@ class TimestampedSoftDeleteModel(models.Model):
 class IP(TimestampedSoftDeleteModel):
     ip = models.CharField(max_length=50, unique=True)
     concurrent_multiplier = models.FloatField(default=1.0)
+    vip = models.BooleanField(default=False)
 
     class Meta:
         managed = False

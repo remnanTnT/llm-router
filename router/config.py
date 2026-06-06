@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "log_path": "./logs/requests",
-    "server": {"data_upload_max_memory_size_mb": 50, "vip_port": 8008},
+    "server": {"bind": "0.0.0.0:8001", "data_upload_max_memory_size_mb": 50, "vip_port": 8008},
     "vip": {
         "cooldown_seconds": 300,
         "min_normal_servers": 2,
@@ -102,6 +102,11 @@ def load_config() -> dict[str, Any]:
     if "VIP_PORT" in os.environ:
         try:
             config.setdefault("server", {})["vip_port"] = int(os.environ["VIP_PORT"])
+        except (TypeError, ValueError):
+            pass
+    if "HTTP_PORT" in os.environ:
+        try:
+            config.setdefault("server", {})["bind"] = f"0.0.0.0:{int(os.environ['HTTP_PORT'])}"
         except (TypeError, ValueError):
             pass
     if "PREFIX_CACHE_PRIMARY_MATCH_THRESHOLD" in os.environ:

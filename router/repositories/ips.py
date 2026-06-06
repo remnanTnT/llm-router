@@ -11,7 +11,7 @@ class IPRepository:
         now = timezone.now()
         return IP.objects.get_or_create(
             ip=ip,
-            defaults={"concurrent_multiplier": 1.0, "created_at": now, "updated_at": now},
+            defaults={"concurrent_multiplier": 1.0, "vip": False, "created_at": now, "updated_at": now},
         )
 
     @staticmethod

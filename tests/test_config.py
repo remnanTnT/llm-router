@@ -14,3 +14,12 @@ def test_prefix_cache_threshold_env_overrides(monkeypatch, tmp_path):
     assert config["prefix_cache"]["secondary_match_threshold"] == "0.45"
     assert config["prefix_cache"]["max_prefix_chars"] == 4096
     assert config["prefix_cache"]["prefix_block_chars"] == 64
+
+
+def test_http_port_env_updates_server_bind(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_ROUTER_CONFIG", str(tmp_path / "missing.yaml"))
+    monkeypatch.setenv("HTTP_PORT", "9000")
+
+    config = load_config()
+
+    assert config["server"]["bind"] == "0.0.0.0:9000"
