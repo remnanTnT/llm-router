@@ -1,7 +1,7 @@
 import json
 import pytest
 from django.test import Client
-from router.models import Model
+from router.models import Model, Server
 
 @pytest.mark.django_db
 def test_deprecated_model_returns_400():
@@ -65,6 +65,21 @@ def test_unknown_model_returns_400():
     record = RequestRecord.objects.last()
     assert record.status == "400 Bad Request"
     assert record.fail_reason == data["error"]["message"]
+
+
+@pytest.mark.django_db
+def test_small_unknown_model_returns_400_even_with_routing_server():
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "unknown-model", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "Model unknown-model is not supported."
 
 
 @pytest.mark.django_db
