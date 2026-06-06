@@ -121,23 +121,77 @@ class ProxyService:
         
         payload = self._build_routing_payload(routing_model_name, body)
 
+        url = self._build_url(server.base_url, "chat/completions", "")
+        headers = {"Content-Type": "application/json"}
+        if server.csb_token:
+            headers["csb-token"] = server.csb_token
+
         try:
-            url = self._build_url(server.base_url, "chat/completions", "")
-            headers = {"Content-Type": "application/json"}
-            if server.csb_token:
-                headers["csb-token"] = server.csb_token
             resp = requests.post(url, json=payload, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                for name in model_names:
-                    if name in result:
-                        matched = next((m for m in active_models if m.model_name == name), None)
-                        if matched:
-                            return matched, result
         except Exception as e:
-            append_request_log(record.id, f"Routing LLM error: {str(e)}")
+            router_result = self._routing_exception_result(e)
+            self._safe_append_request_log(record.id, f"Routing LLM error: {str(e)}")
+            return self._get_default_model(), router_result
+
+        if resp.status_code != 200:
+            return self._get_default_model(), self._routing_response_error_result(resp)
+
+        try:
+            result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as e:
+            router_result = self._routing_exception_result(e, status_code=resp.status_code)
+            self._safe_append_request_log(record.id, f"Routing LLM error: {str(e)}")
+            return self._get_default_model(), router_result
+
+        for name in model_names:
+            if name in result:
+                matched = next((m for m in active_models if m.model_name == name), None)
+                if matched:
+                    return matched, result
 
         return self._get_default_model(), "fallback"
+
+    def _routing_response_error_result(self, response) -> str:
+        status_code = getattr(response, "status_code", None)
+        content = self._response_content_bytes(response)
+        reason = self._response_reason(response)
+        message = self._extract_fail_reason(content, reason or "routing request failed")
+        return self._format_router_result("routing_failed", status_code, message)
+
+    def _routing_exception_result(self, exc: Exception, status_code: int | None = None) -> str:
+        return self._format_router_result("routing_error", status_code, str(exc))
+
+    @staticmethod
+    def _format_router_result(prefix: str, status_code: int | None, message: str) -> str:
+        code = str(status_code) if status_code is not None else "exception"
+        return f"{prefix}:{code}:{message}"[:100]
+
+    @staticmethod
+    def _response_content_bytes(response) -> bytes:
+        content = getattr(response, "content", b"")
+        if isinstance(content, str):
+            return content.encode("utf-8", errors="replace")
+        if isinstance(content, (bytes, bytearray)):
+            return bytes(content)
+        text = getattr(response, "text", "")
+        if isinstance(text, str):
+            return text.encode("utf-8", errors="replace")
+        return b""
+
+    @staticmethod
+    def _response_reason(response) -> str:
+        reason = getattr(response, "reason", "")
+        if isinstance(reason, str):
+            return reason
+        text = getattr(response, "text", "")
+        return text if isinstance(text, str) else ""
+
+    @staticmethod
+    def _safe_append_request_log(request_id: int, message: str) -> None:
+        try:
+            append_request_log(request_id, message)
+        except Exception:
+            pass
 
     def _ensure_system_prompt(self, model_names: list[str]) -> None:
         if self._router_system_prompt is None:
@@ -185,7 +239,7 @@ class ProxyService:
         return user_messages
 
     def _get_default_model(self) -> Any:
-        name = APP_CONFIG.get("router", {}).get("fallback_model", "glm-5.1")
+        name = APP_CONFIG.get("router", {}).get("fallback_model", "DeepSeek-V4-Flash")
         return ModelRepository.get_by_name(name)
 
     def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None, is_vip_channel: bool = False):
@@ -214,7 +268,7 @@ class ProxyService:
 
         context.router_result = router_result
         if not candidates:
-            return self._handle_no_candidates(record, user_agent)
+            return self._handle_no_candidates(record, user_agent, context, model)
 
         return self._route_with_retry(
             django_request, path, headers, parsed.body, record, user_agent,
@@ -315,6 +369,25 @@ class ProxyService:
     def _after_finish(self, served_as_vip: bool, model, estimate_tokens: int = 0) -> None:
         if served_as_vip and model is not None:
             self.vip_service.maybe_scale_down(model, estimate_tokens=estimate_tokens)
+
+    def _handle_no_candidates(self, record, user_agent, context: ServerSelectionContext, model):
+        reason = "no available server"
+        if model is not None:
+            reason = f"no available server for model {model.model_name}"
+        RequestRepository.finish(
+            record,
+            502,
+            reason,
+            model_id=model.id if model else None,
+            attempt_count=0,
+            router_result=getattr(context, "router_result", None),
+        )
+        self._maybe_delay_opencode_failure(user_agent, 502)
+        return HttpResponse(
+            json.dumps(error_payload("502 Bad Gateway", "server_error")),
+            status=502,
+            content_type="application/json",
+        )
 
     def _route_with_retry(self, django_request, path, headers, body, record, user_agent, candidates, context, served_as_vip, model, is_stream):
         disconnect_scope = self._open_disconnect_scope(django_request, is_stream)

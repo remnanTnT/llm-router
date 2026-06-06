@@ -359,3 +359,83 @@ def test_small_auto_request_is_not_forced_to_routing_server(monkeypatch):
     assert response.status_code == 200
     record = RequestRecord.objects.get()
     assert record.model_choosing_latency == 125
+
+
+def test_auto_route_failed_routing_uses_deepseek_fallback_and_records_router_result(monkeypatch):
+    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=fallback_model.id, base_url="http://deepseek.example", is_online=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_post(url, json, headers, timeout):
+        assert url == "http://router.example/chat/completions"
+        response = MagicMock()
+        response.status_code = 502
+        response.reason = "Bad Gateway"
+        response.content = b'{"error":{"message":"router down","type":"server_error","code":null}}'
+        return response
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://deepseek.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "DeepSeek-V4-Flash"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b'{"usage": {"prompt_tokens": 1, "completion_tokens": 2}}'
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "auto", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == fallback_model.id
+    assert record.task_status == "success"
+    assert record.router_result == "routing_failed:502:server_error: router down"
+
+
+def test_auto_route_failed_routing_without_fallback_server_finishes_same_record(monkeypatch):
+    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 502
+        response.reason = "Bad Gateway"
+        response.content = b'{"error":{"message":"router down","type":"server_error","code":null}}'
+        return response
+
+    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "auto", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": {"message": "502 Bad Gateway", "type": "server_error", "code": None}}
+    assert RequestRecord.objects.count() == 1
+
+    record = RequestRecord.objects.get()
+    assert record.model_id == fallback_model.id
+    assert record.task_status == "failed"
+    assert record.status == "502 Bad Gateway"
+    assert record.fail_reason == "no available server for model DeepSeek-V4-Flash"
+    assert record.attempt_count == 0
+    assert record.target_pod_ip is None
+    assert record.router_result == "routing_failed:502:server_error: router down"
