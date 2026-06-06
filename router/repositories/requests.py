@@ -279,3 +279,45 @@ class RequestRepository:
                 model_id__in=model_ids,
             ).values("model_id", "send_time", "latency")
         )
+
+    @staticmethod
+    def sum_input_tokens(start: datetime, end: datetime, model_id: int | None = None) -> int:
+        """Calculate the sum of final_prefix_cache + input_token_cnt for the given time range.
+
+        Args:
+            start: Start datetime
+            end: End datetime
+            model_id: Optional model ID to filter by. If None, returns sum for all models.
+        """
+        qs = RequestRecord.objects.filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success"
+        )
+        if model_id is not None:
+            qs = qs.filter(model_id=model_id)
+        result = qs.aggregate(
+            total_input=models.Sum(models.F("final_prefix_cache") + models.F("input_token_cnt"))
+        )
+        return result["total_input"] or 0
+
+    @staticmethod
+    def sum_output_tokens(start: datetime, end: datetime, model_id: int | None = None) -> int:
+        """Calculate the sum of output_token_cnt for the given time range.
+
+        Args:
+            start: Start datetime
+            end: End datetime
+            model_id: Optional model ID to filter by. If None, returns sum for all models.
+        """
+        qs = RequestRecord.objects.filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success"
+        )
+        if model_id is not None:
+            qs = qs.filter(model_id=model_id)
+        result = qs.aggregate(
+            total_output=models.Sum("output_token_cnt")
+        )
+        return result["total_output"] or 0
