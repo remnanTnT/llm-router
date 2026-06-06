@@ -67,7 +67,7 @@ export LLM_ROUTER_CONFIG=/path/to/config.yaml
 
 ## Environment Variables
 
-Database values can be overridden with environment variables:
+Database and listener values can be overridden with environment variables:
 
 ```bash
 export DB_HOST=localhost
@@ -76,6 +76,7 @@ export DB_USER=postgres
 export DB_PASSWORD=postgres
 export DB_NAME=postgres
 export DB_SSLMODE=disable
+export HTTP_PORT=8001
 export VIP_PORT=8008
 ```
 

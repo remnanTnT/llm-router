@@ -56,6 +56,11 @@ def proxy(request, path: str):
         if created:
             threading.Thread(target=CMDBService().fetch_and_save_user, args=(client_ip,), daemon=True).start()
 
+        if is_vip_channel and not ip.vip:
+            message = _vip_port_closed_message(request)
+            RequestRepository.create_blocked(ip.id, 0, None, user_agent, 503, message)
+            return error_response(503, message, "service_unavailable")
+
         admission = AdmissionService()
         permission = admission.check_permission(ip)
         if not permission.allowed:
@@ -161,14 +166,56 @@ def _client_ip(request) -> str:
 
 
 def _is_vip_channel(request) -> bool:
-    try:
-        vip_port = int(APP_CONFIG.get("server", {}).get("vip_port", 8008))
-    except (TypeError, ValueError):
+    vip_port = _configured_vip_port()
+    if vip_port is None:
         return False
-    server_port = request.META.get("SERVER_PORT")
+    server_port = _request_port(request)
     if server_port is None:
         return False
+    return server_port == vip_port
+
+
+def _request_port(request) -> int | None:
+    server_port = request.META.get("SERVER_PORT")
+    if server_port is None:
+        return None
     try:
-        return int(server_port) == vip_port
+        return int(server_port)
     except (TypeError, ValueError):
-        return False
+        return None
+
+
+def _configured_vip_port() -> int | None:
+    try:
+        return int(APP_CONFIG.get("server", {}).get("vip_port", 8008))
+    except (TypeError, ValueError):
+        return None
+
+
+def _configured_normal_port() -> int | None:
+    server_config = APP_CONFIG.get("server", {})
+    try:
+        return int(server_config["normal_port"])
+    except (KeyError, TypeError, ValueError):
+        return _parse_bind_port(server_config.get("bind"))
+
+
+def _parse_bind_port(bind: object) -> int | None:
+    if not bind:
+        return None
+    bind_text = str(bind).strip()
+    if bind_text.isdigit():
+        return int(bind_text)
+    if ":" not in bind_text:
+        return None
+    port_text = bind_text.rsplit(":", 1)[1].strip()
+    try:
+        return int(port_text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _vip_port_closed_message(request) -> str:
+    vip_port = _request_port(request) or _configured_vip_port()
+    normal_port = _configured_normal_port()
+    return f"Port {vip_port} is closed, please use port {normal_port}"
