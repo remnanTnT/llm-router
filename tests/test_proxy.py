@@ -76,6 +76,14 @@ class _RoutingChooser:
         return "route this prompt"
 
 
+class _PrefixCacheChooser(_RoutingChooser):
+    def __init__(self, ratios):
+        self.ratios = ratios
+
+    def get_all_model_prefix_ratios(self, body, model_names):
+        return {name: self.ratios.get(name, 0.0) for name in model_names}
+
+
 def test_auto_route_request_disables_thinking(monkeypatch):
     target_model = Model.objects.create(model_name="target-model")
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
@@ -203,6 +211,67 @@ def test_auto_route_without_active_target_model_records_router_result():
     assert router_result == (
         "routing_failed:missing_target_model:no active target model for auto request"
     )
+
+
+def test_auto_route_can_use_routing_model_as_prefix_cache_target(monkeypatch):
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing request should not be sent on prefix-cache hit")
+
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+
+    service = ProxyService(chooser=_PrefixCacheChooser({"router-model": 0.95}))
+    model, router_result = service._get_auto_route_model(
+        b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model == routing_model
+    assert router_result == "cache_hit"
+
+
+def test_auto_route_can_use_routing_model_as_final_processing_model(monkeypatch):
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_post(url, json, headers, timeout):
+        assert url == "http://router.example/chat/completions"
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": "router-model"}}]}
+        return response
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://router.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "router-model"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b'{"usage": {"prompt_tokens": 1, "completion_tokens": 2}}'
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "auto", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == routing_model.id
+    assert record.task_status == "success"
+    assert record.router_result == "router-model"
 
 
 def test_auto_route_without_routing_model_uses_fallback_and_records_router_result(monkeypatch):
