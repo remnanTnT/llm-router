@@ -9,6 +9,7 @@ def test_parser_injects_stream_options_and_default_max_tokens():
     assert parsed.model_name == "m1"
     assert parsed.stream is True
     assert parsed.max_tokens == 8528
+    assert parsed.estimated_full_body_tokens > 0
     assert data["stream_options"] == {"include_usage": True}
     assert data["max_tokens"] == 8528
 
@@ -18,3 +19,4 @@ def test_parser_leaves_non_json_unchanged():
     assert parsed.body == b"not-json"
     assert parsed.is_json is False
     assert parsed.model_name is None
+    assert parsed.estimated_full_body_tokens >= 0

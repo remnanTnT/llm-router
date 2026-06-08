@@ -236,12 +236,8 @@ def test_auto_route_can_use_routing_model_as_final_processing_model(monkeypatch)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
-    def fake_post(url, json, headers, timeout):
-        assert url == "http://router.example/chat/completions"
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"choices": [{"message": {"content": "router-model"}}]}
-        return response
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing LLM should not be called for small auto requests")
 
     def fake_request(self_inner, method, url, **kwargs):
         assert url == "http://router.example/chat/completions"
@@ -255,7 +251,7 @@ def test_auto_route_can_use_routing_model_as_final_processing_model(monkeypatch)
         return upstream
 
     monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -271,7 +267,7 @@ def test_auto_route_can_use_routing_model_as_final_processing_model(monkeypatch)
     record = RequestRecord.objects.get()
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
-    assert record.router_result == "router-model"
+    assert record.router_result == "small_request_routing"
 
 
 def test_auto_route_without_routing_model_uses_fallback_and_records_router_result(monkeypatch):
@@ -314,24 +310,17 @@ def test_auto_route_without_routing_model_uses_fallback_and_records_router_resul
     )
 
 
-def test_auto_route_invalid_routing_result_uses_fallback_and_records_router_result(monkeypatch):
-    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+def test_small_auto_request_uses_routing_model_directly(monkeypatch):
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
-    Server.objects.create(model_id=fallback_model.id, base_url="http://deepseek.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
-    def fake_post(url, json, headers, timeout):
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {
-            "choices": [{"message": {"content": "not-a-configured-model"}}],
-        }
-        return response
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing LLM should not be called for small auto requests")
 
     def fake_request(self_inner, method, url, **kwargs):
-        assert url == "http://deepseek.example/chat/completions"
+        assert url == "http://router.example/chat/completions"
         data = json.loads(kwargs["data"].decode("utf-8"))
-        assert data["model"] == "DeepSeek-V4-Flash"
+        assert data["model"] == "router-model"
         upstream = MagicMock()
         upstream.status_code = 200
         upstream.reason = "OK"
@@ -340,7 +329,7 @@ def test_auto_route_invalid_routing_result_uses_fallback_and_records_router_resu
         return upstream
 
     monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -354,11 +343,9 @@ def test_auto_route_invalid_routing_result_uses_fallback_and_records_router_resu
 
     assert response.status_code == 200
     record = RequestRecord.objects.get()
-    assert record.model_id == fallback_model.id
+    assert record.model_id == routing_model.id
     assert record.task_status == "success"
-    assert record.router_result == (
-        "routing_failed:invalid_routing_result:router returned no active model: not-a-configured-model"
-    )
+    assert record.router_result == "small_request_routing"
 
 
 def test_update_body_model_can_disable_thinking():
@@ -409,7 +396,7 @@ def test_small_non_auto_request_uses_routing_server_and_disables_thinking(monkey
         stream=False,
         body=b'{"model":"user-model","messages":[{"role":"user","content":"hello"}]}',
         model_name="user-model",
-        estimated_input_tokens=2999,
+        estimated_full_body_tokens=2999,
     )
 
     response = ProxyService(chooser=_RoutingChooser()).forward(
@@ -456,7 +443,7 @@ def test_three_thousand_token_non_auto_request_keeps_user_model(monkeypatch):
         stream=False,
         body=b'{"model":"user-model","messages":[{"role":"user","content":"hello"}]}',
         model_name="user-model",
-        estimated_input_tokens=3000,
+        estimated_full_body_tokens=3000,
     )
 
     response = ProxyService(chooser=_RoutingChooser()).forward(
@@ -471,33 +458,28 @@ def test_three_thousand_token_non_auto_request_keeps_user_model(monkeypatch):
     assert response.status_code == 200
 
 
-def test_small_auto_request_is_not_forced_to_routing_server(monkeypatch):
+def test_small_auto_request_uses_small_request_routing(monkeypatch):
     target_model = Model.objects.create(model_name="target-model")
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
-    def fake_post(url, json, headers, timeout):
-        assert url == "http://router.example/chat/completions"
-        assert json["chat_template_kwargs"] == {"enable_thinking": False}
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"choices": [{"message": {"content": "target-model"}}]}
-        return response
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing LLM should not be called for small auto requests")
 
     def fake_request(self_inner, method, url, **kwargs):
-        assert url == "http://target.example/chat/completions"
+        assert url == "http://router.example/chat/completions"
         data = json.loads(kwargs["data"].decode("utf-8"))
-        assert data["model"] == "target-model"
-        assert "chat_template_kwargs" not in data
+        assert data["model"] == "router-model"
+        assert data["chat_template_kwargs"] == {"enable_thinking": False}
         upstream = MagicMock()
         upstream.status_code = 200
         upstream.reason = "OK"
-        upstream.content = b"{}"
+        upstream.content = b'{"usage": {"prompt_tokens": 1, "completion_tokens": 2}}'
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -514,7 +496,7 @@ def test_small_auto_request_is_not_forced_to_routing_server(monkeypatch):
         stream=False,
         body=b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
         model_name="auto",
-        estimated_input_tokens=10,
+        estimated_full_body_tokens=10,
     )
 
     response = ProxyService(chooser=_RoutingChooser()).forward(
@@ -528,27 +510,21 @@ def test_small_auto_request_is_not_forced_to_routing_server(monkeypatch):
 
     assert response.status_code == 200
     record = RequestRecord.objects.get()
+    assert record.router_result == "small_request_routing"
     assert record.model_choosing_latency == 125
 
 
-def test_auto_route_failed_routing_uses_deepseek_fallback_and_records_router_result(monkeypatch):
-    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+def test_small_auto_request_routes_directly_to_routing_server(monkeypatch):
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
-    Server.objects.create(model_id=fallback_model.id, base_url="http://deepseek.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
-    def fake_post(url, json, headers, timeout):
-        assert url == "http://router.example/chat/completions"
-        response = MagicMock()
-        response.status_code = 502
-        response.reason = "Bad Gateway"
-        response.content = b'{"error":{"message":"router down","type":"server_error","code":null}}'
-        return response
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing LLM should not be called for small auto requests")
 
     def fake_request(self_inner, method, url, **kwargs):
-        assert url == "http://deepseek.example/chat/completions"
+        assert url == "http://router.example/chat/completions"
         data = json.loads(kwargs["data"].decode("utf-8"))
-        assert data["model"] == "DeepSeek-V4-Flash"
+        assert data["model"] == "router-model"
         upstream = MagicMock()
         upstream.status_code = 200
         upstream.reason = "OK"
@@ -557,7 +533,7 @@ def test_auto_route_failed_routing_uses_deepseek_fallback_and_records_router_res
         return upstream
 
     monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -571,9 +547,9 @@ def test_auto_route_failed_routing_uses_deepseek_fallback_and_records_router_res
 
     assert response.status_code == 200
     record = RequestRecord.objects.get()
-    assert record.model_id == fallback_model.id
+    assert record.model_id == routing_model.id
     assert record.task_status == "success"
-    assert record.router_result == "routing_failed:502:server_error: router down"
+    assert record.router_result == "small_request_routing"
 
 
 def test_auto_route_without_routing_server_uses_fallback_and_records_router_result(monkeypatch):
@@ -617,20 +593,30 @@ def test_auto_route_without_routing_server_uses_fallback_and_records_router_resu
     )
 
 
-def test_auto_route_failed_routing_without_fallback_server_finishes_same_record(monkeypatch):
-    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+def test_small_auto_request_succeeds_with_routing_server(monkeypatch):
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
-    def fake_post(url, json, headers, timeout):
-        response = MagicMock()
-        response.status_code = 502
-        response.reason = "Bad Gateway"
-        response.content = b'{"error":{"message":"router down","type":"server_error","code":null}}'
-        return response
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing LLM should not be called for small auto requests")
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://router.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "router-model"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b'{"usage": {"prompt_tokens": 1, "completion_tokens": 2}}'
+        upstream.headers = {}
+        return upstream
 
     monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
 
     response = Client().post(
         "/v1/chat/completions",
@@ -638,15 +624,10 @@ def test_auto_route_failed_routing_without_fallback_server_finishes_same_record(
         content_type="application/json",
     )
 
-    assert response.status_code == 502
-    assert response.json() == {"error": {"message": "502 Bad Gateway", "type": "server_error", "code": None}}
+    assert response.status_code == 200
     assert RequestRecord.objects.count() == 1
 
     record = RequestRecord.objects.get()
-    assert record.model_id == fallback_model.id
-    assert record.task_status == "failed"
-    assert record.status == "502 Bad Gateway"
-    assert record.fail_reason == "no available server for model DeepSeek-V4-Flash"
-    assert record.attempt_count == 0
-    assert record.target_pod_ip is None
-    assert record.router_result == "routing_failed:502:server_error: router down"
+    assert record.model_id == routing_model.id
+    assert record.task_status == "success"
+    assert record.router_result == "small_request_routing"

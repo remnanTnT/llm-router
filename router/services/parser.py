@@ -15,6 +15,7 @@ class ParsedRequest:
     max_tokens: int | None
     is_json: bool
     estimated_input_tokens: int = 0
+    estimated_full_body_tokens: int = 0
 
 
 class RequestParser:
@@ -34,7 +35,7 @@ class RequestParser:
                 est_tokens = fast_estimate_tokens(body.decode("utf-8"))
             except Exception:
                 pass
-            return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=False, estimated_input_tokens=est_tokens)
+            return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=False, estimated_input_tokens=est_tokens, estimated_full_body_tokens=est_tokens)
 
         if not isinstance(data, dict):
             return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=True)
@@ -55,6 +56,7 @@ class RequestParser:
         # Estimate input tokens from prompt or messages
         prompt_text = self._extract_prompt_text(data)
         estimated_input_tokens = fast_estimate_tokens(prompt_text)
+        estimated_full_body_tokens = fast_estimate_tokens(body_str)
 
         new_body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         return ParsedRequest(
@@ -64,6 +66,7 @@ class RequestParser:
             max_tokens=max_tokens,
             is_json=True,
             estimated_input_tokens=estimated_input_tokens,
+            estimated_full_body_tokens=estimated_full_body_tokens,
         )
 
     def _extract_prompt_text(self, data: dict) -> str:
