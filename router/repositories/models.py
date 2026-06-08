@@ -25,7 +25,7 @@ class ModelRepository:
 
     @staticmethod
     def list_active_models() -> list[Model]:
-        return list(Model.objects.filter(deprecation__isnull=True, is_routing_model=False).order_by("id"))
+        return list(Model.objects.filter(deprecation__isnull=True).order_by("id"))
 
     @staticmethod
     def get_routing_models() -> list[Model]:
