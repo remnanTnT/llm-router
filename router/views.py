@@ -81,25 +81,25 @@ def proxy(request, path: str):
 
         if input_model_name and input_model_name != "auto" and model is None:
             message = f"Model {input_model_name} is not supported."
-            RequestRepository.create_blocked(ip.id, 0, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_input_tokens)
+            RequestRepository.create_blocked(ip.id, 0, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_full_body_tokens)
             return error_response(400, message, "invalid_request_error")
 
         if model and model.deprecation:
             message = model.deprecation
-            RequestRepository.create_blocked(ip.id, model.id, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_input_tokens)
+            RequestRepository.create_blocked(ip.id, model.id, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_full_body_tokens)
             return error_response(400, message, "invalid_request_error")
 
         max_token_check = admission.check_max_tokens(parsed.max_tokens, model)
         if not max_token_check.allowed:
             message = max_token_check.message or "invalid request"
-            RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_input_tokens)
+            RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_full_body_tokens)
             return error_response(max_token_check.status_code, message, max_token_check.error_type or "invalid_request_error")
 
         if not is_vip_channel:
             concurrency = admission.check_concurrency(ip, model, is_auto=(parsed.model_name == "auto"))
             if not concurrency.allowed:
                 message = concurrency.message or "concurrent limit exceeded"
-                RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 429, message, estimate_tokens=parsed.estimated_input_tokens)
+                RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 429, message, estimate_tokens=parsed.estimated_full_body_tokens)
                 return error_response(concurrency.status_code, message, concurrency.error_type or "concurrent_limit_exceeded")
 
         return ProxyService().forward(request, path, parsed, ip.id, model, user_agent, is_vip_channel=is_vip_channel)
@@ -108,7 +108,7 @@ def proxy(request, path: str):
         model_id = model.id if model else 0
         ip_id = ip.id if ip else None
         is_stream = parsed.stream if parsed else None
-        estimate_tokens = parsed.estimated_input_tokens if 'parsed' in locals() and parsed else 0
+        estimate_tokens = parsed.estimated_full_body_tokens if 'parsed' in locals() and parsed else 0
         RequestRepository.create_blocked(ip_id, model_id, is_stream, user_agent, 502, message, estimate_tokens=estimate_tokens)
         return error_response(502, message, "server_error")
 

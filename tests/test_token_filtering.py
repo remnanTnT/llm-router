@@ -61,6 +61,6 @@ def test_parser_estimates_tokens_and_storage():
     body = b'{"model":"test-model","prompt":"Hello world, this is a test prompt to estimate tokens."}'
     parsed = parser.parse(body)
     
-    assert parsed.estimated_input_tokens > 0
+    assert parsed.estimated_full_body_tokens > 0
     # It should be around len("Hello world...") * 0.22 or so, but definitely > 0
-    assert parsed.estimated_input_tokens > 5 
+    assert parsed.estimated_full_body_tokens > 5 

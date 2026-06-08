@@ -186,7 +186,7 @@ class ProxyService:
     def _format_router_result(prefix: str, status_code: int | str | None, message: str) -> str:
         code = str(status_code) if status_code is not None else "exception"
         detail = ProxyService._compact_router_message(message)
-        return f"{prefix}:{code}:{detail}"[:100]
+        return f"{prefix}:{code}:{detail}"[:300]
 
     @staticmethod
     def _compact_router_message(message: Any) -> str:
@@ -277,10 +277,9 @@ class ProxyService:
         should_record_model_choice = original_model_name == "auto" or self._should_route_small_request(parsed)
         model_choice_started = time.monotonic() if should_record_model_choice else None
         try:
-            model, router_result = self._resolve_auto_model(parsed, record, context, model)
-            if original_model_name != "auto":
-                model, small_request_result = self._resolve_small_request_routing_model(parsed, record, context, model)
-                router_result = small_request_result or router_result
+            model, router_result = self._resolve_small_request_routing_model(parsed, record, context, model)
+            if router_result is None:
+                model, router_result = self._resolve_auto_model(parsed, record, context, model)
         finally:
             if model_choice_started is not None:
                 RequestRepository.record_model_choosing_latency(
@@ -288,7 +287,7 @@ class ProxyService:
                     int((time.monotonic() - model_choice_started) * 1000),
                 )
 
-        candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel, estimate_tokens=parsed.estimated_input_tokens)
+        candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel, estimate_tokens=parsed.estimated_full_body_tokens)
         if served_as_vip:
             record.user_ip_id = 2
             record.save(update_fields=["user_ip_id"])
@@ -311,7 +310,7 @@ class ProxyService:
             parsed.stream,
             user_agent,
             user_ip_id=user_ip_id,
-            estimate_tokens=parsed.estimated_input_tokens,
+            estimate_tokens=parsed.estimated_full_body_tokens,
         )
 
     @staticmethod
@@ -341,7 +340,7 @@ class ProxyService:
         if not self._should_route_small_request(parsed):
             return model, None
 
-        routing_model = self._get_small_request_routing_model(parsed.estimated_input_tokens)
+        routing_model = self._get_small_request_routing_model(parsed.estimated_full_body_tokens)
         if routing_model is None:
             return model, None
 
@@ -349,7 +348,7 @@ class ProxyService:
         return routing_model, "small_request_routing"
 
     def _should_route_small_request(self, parsed) -> bool:
-        return int(parsed.estimated_input_tokens or 0) < self.SMALL_REQUEST_ROUTING_TOKEN_LIMIT
+        return int(parsed.estimated_full_body_tokens or 0) < self.SMALL_REQUEST_ROUTING_TOKEN_LIMIT
 
     @staticmethod
     def _get_small_request_routing_model(estimate_tokens: int = 0):

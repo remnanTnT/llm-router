@@ -106,7 +106,7 @@ class RequestRepository:
         record.output_token_cnt = output_tokens or 0
         record.final_prefix_cache = final_prefix_cache or 0
         if router_result:
-            record.router_result = router_result[:100]
+            record.router_result = router_result[:300]
         update_fields = [
             "end_time",
             "latency",
