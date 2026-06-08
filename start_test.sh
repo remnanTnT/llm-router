@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 export DB_HOST="${DB_HOST:-localhost}"
 export DB_PORT="${DB_PORT:-5432}"
 export LLM_ROUTER_CONFIG="${LLM_ROUTER_CONFIG:-$(pwd)/config.yaml}"
+export LLM_ROUTER_LOG_PATH="${LLM_ROUTER_LOG_PATH:-.logs/requests}"
 export LLM_ROUTER_VERBOSE_REQUEST_LOG=1
 export HTTP_PORT="${HTTP_PORT:-9000}"
 export VIP_PORT="${VIP_PORT:-9001}"

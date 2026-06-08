@@ -23,3 +23,12 @@ def test_http_port_env_updates_server_bind(monkeypatch, tmp_path):
     config = load_config()
 
     assert config["server"]["bind"] == "0.0.0.0:9000"
+
+
+def test_log_path_env_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_ROUTER_CONFIG", str(tmp_path / "missing.yaml"))
+    monkeypatch.setenv("LLM_ROUTER_LOG_PATH", "/data/router_log")
+
+    config = load_config()
+
+    assert config["log_path"] == "/data/router_log"

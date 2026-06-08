@@ -86,6 +86,8 @@ def load_config() -> dict[str, Any]:
         with config_path.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
     config = _deep_merge(DEFAULT_CONFIG, data)
+    if "LLM_ROUTER_LOG_PATH" in os.environ:
+        config["log_path"] = os.environ["LLM_ROUTER_LOG_PATH"]
     prefix_cache = config.setdefault("prefix_cache", {})
 
     database = config.setdefault("database", {})

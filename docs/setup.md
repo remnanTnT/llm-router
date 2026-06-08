@@ -100,12 +100,13 @@ DB_HOST=127.0.0.1 \
 DB_PORT=5433 \
 REDIS_PORT=6381 \
 LLM_ROUTER_CONFIG=/path/to/config.yaml \
+LLM_ROUTER_LOG_PATH=/data/router_log \
 GUNICORN_WORKERS=4 \
 GUNICORN_THREADS=16 \
 ./start_prod.sh
 ```
 
-`start_prod.sh` disables verbose request logging. `start_test.sh` enables verbose request logging and writes a `user_request` event into the per-request log file.
+`start_prod.sh` defaults request logs to `/data/router_log` and disables verbose request logging. `start_test.sh` defaults request logs to `.logs/requests`, enables verbose request logging, and writes a `user_request` event into the per-request log file.
 
 Equivalent production Gunicorn command:
 
