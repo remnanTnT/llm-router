@@ -110,9 +110,11 @@ class ProxyService:
         if complexity is None:
             return self._get_default_model(), router_result
 
-        matched = self._model_for_complexity(active_models, complexity)
-        if matched:
-            return matched, router_result
+        matched = self._models_for_complexity(active_models, complexity)
+        if len(matched) == 1:
+            return matched[0], router_result
+        if len(matched) > 1:
+            return self._get_default_model(), self._multiple_models_for_complexity_result(complexity, matched)
 
         return self._get_default_model(), self._no_model_for_complexity_result(complexity)
 
@@ -199,6 +201,14 @@ class ProxyService:
             f"complexity {complexity} has no matching auto-selectable model",
         )
 
+    def _multiple_models_for_complexity_result(self, complexity: int, models: list[Any]) -> str:
+        model_names = ",".join(str(model.model_name) for model in models)
+        return self._format_router_result(
+            "routing_failed",
+            "multiple_models_for_complexity",
+            f"complexity {complexity} matched multiple auto-selectable models: {model_names}",
+        )
+
     @staticmethod
     def _complexity_routing_result(complexity: int) -> str:
         return f"complexity:{complexity}"
@@ -236,23 +246,13 @@ class ProxyService:
         return None
 
     @staticmethod
-    def _model_for_complexity(models: list[Any], complexity: int) -> Any | None:
-        matching = [
+    def _models_for_complexity(models: list[Any], complexity: int) -> list[Any]:
+        return [
             model for model in models
             if model.complexity_min is not None
             and model.complexity_max is not None
             and model.complexity_min <= complexity <= model.complexity_max
         ]
-        if not matching:
-            return None
-        return min(
-            matching,
-            key=lambda model: (
-                model.complexity_max - model.complexity_min,
-                model.complexity_max,
-                model.id,
-            ),
-        )
 
     @staticmethod
     def _strip_json_fence(result: str) -> str:

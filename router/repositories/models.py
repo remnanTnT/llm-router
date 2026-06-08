@@ -49,16 +49,7 @@ class ModelRepository:
             model for model in candidates
             if model.complexity_min <= complexity <= model.complexity_max
         ]
-        if not matching:
-            return None
-        return min(
-            matching,
-            key=lambda model: (
-                model.complexity_max - model.complexity_min,
-                model.complexity_max,
-                model.id,
-            ),
-        )
+        return matching[0] if len(matching) == 1 else None
 
     @staticmethod
     def get_routing_models() -> list[Model]:

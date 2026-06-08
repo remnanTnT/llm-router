@@ -234,9 +234,10 @@ def test_auto_route_prefix_cache_uses_only_auto_selectable_models(monkeypatch):
     assert router_result == "cache_hit"
 
 
-def test_auto_route_selects_narrowest_matching_complexity_range(monkeypatch):
+def test_auto_route_multiple_matching_complexity_ranges_use_fallback(monkeypatch):
     broad_model = Model.objects.create(model_name="broad-model", complexity_min=1, complexity_max=10)
     narrow_model = Model.objects.create(model_name="narrow-model", complexity_min=7, complexity_max=8)
+    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
@@ -266,8 +267,11 @@ def test_auto_route_selects_narrowest_matching_complexity_range(monkeypatch):
         [broad_model.model_name, narrow_model.model_name],
     )
 
-    assert model == narrow_model
-    assert router_result == "complexity:7"
+    assert model == fallback_model
+    assert router_result == (
+        "routing_failed:multiple_models_for_complexity:"
+        "complexity 7 matched multiple auto-selectable models: broad-model,narrow-model"
+    )
 
 
 def test_auto_route_without_matching_complexity_uses_fallback(monkeypatch):
