@@ -59,7 +59,7 @@ database:
   sslmode: disable
 ```
 
-Request logs are written below `log_path` as `YYYY/MM/DD/HH/MM/<request_id>.log`. Start with `./start_prod.sh --verbose` or `./start_test.sh --verbose` to include a `user_request` event containing user-role request content.
+Request logs are written below `log_path` as `YYYY/MM/DD/HH/MM/<request_id>.log`. `start_prod.sh` disables verbose request logging, and `start_test.sh` enables a `user_request` event containing user-role request content.
 
 Point the router to another config file with:
 

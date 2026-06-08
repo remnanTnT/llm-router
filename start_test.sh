@@ -3,29 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-VERBOSE_REQUEST_LOG="${LLM_ROUTER_VERBOSE_REQUEST_LOG:-0}"
-while (($# > 0)); do
-  case "$1" in
-    --verbose)
-      VERBOSE_REQUEST_LOG=1
-      ;;
-    -h|--help)
-      echo "Usage: $0 [--verbose]"
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      echo "Usage: $0 [--verbose]" >&2
-      exit 2
-      ;;
-  esac
-  shift
-done
-
 export DB_HOST="${DB_HOST:-localhost}"
 export DB_PORT="${DB_PORT:-5432}"
 export LLM_ROUTER_CONFIG="${LLM_ROUTER_CONFIG:-$(pwd)/config.yaml}"
-export LLM_ROUTER_VERBOSE_REQUEST_LOG="${VERBOSE_REQUEST_LOG}"
+export LLM_ROUTER_VERBOSE_REQUEST_LOG=1
 export HTTP_PORT="${HTTP_PORT:-9000}"
 export VIP_PORT="${VIP_PORT:-9001}"
 export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"

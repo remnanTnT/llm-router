@@ -105,7 +105,7 @@ GUNICORN_THREADS=16 \
 ./start_prod.sh
 ```
 
-Use `./start_prod.sh --verbose` when per-request log files should include the user request content.
+`start_prod.sh` disables verbose request logging. `start_test.sh` enables verbose request logging and writes a `user_request` event into the per-request log file.
 
 Equivalent production Gunicorn command:
 
