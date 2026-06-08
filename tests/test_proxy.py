@@ -6,6 +6,7 @@ from django.utils import timezone
 
 from router.models import Model, RequestRecord, Server
 from router.route_algorithm.base import ServerSelectionContext
+from router.services import request_logger
 from router.services.proxy import ProxyService
 
 
@@ -197,6 +198,52 @@ def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
     assert "secret-skill" not in payload_text
     assert "secret-mcp" not in payload_text
     assert "secret_tool" not in payload_text
+
+
+def test_verbose_user_request_log_writes_only_user_messages(tmp_path, monkeypatch):
+    monkeypatch.setitem(request_logger.APP_CONFIG, "log_path", str(tmp_path))
+    monkeypatch.setattr(request_logger, "_LOG_PATH_CACHE", None)
+    monkeypatch.setattr(request_logger, "_REQUEST_LOG_FILE_CACHE", {})
+    monkeypatch.setenv("LLM_ROUTER_VERBOSE_REQUEST_LOG", "1")
+
+    request_body = {
+        "model": "target-model",
+        "messages": [
+            {"role": "system", "content": "system prompt"},
+            {"role": "developer", "content": "developer instructions"},
+            {"role": "user", "content": "first user request"},
+            {"role": "assistant", "content": "assistant response"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "user", "content": [{"type": "text", "text": "second user request"}]},
+        ],
+        "tools": [{"type": "function", "function": {"name": "secret_tool"}}],
+    }
+
+    ProxyService._maybe_log_verbose_user_request(123, json.dumps(request_body).encode("utf-8"))
+
+    log_files = list(tmp_path.rglob("123.log"))
+    assert len(log_files) == 1
+    payload = json.loads(log_files[0].read_text(encoding="utf-8"))
+    assert payload == {
+        "event": "user_request",
+        "request_id": 123,
+        "messages": [
+            {"role": "user", "content": "first user request"},
+            {"role": "user", "content": [{"type": "text", "text": "second user request"}]},
+        ],
+    }
+
+
+def test_verbose_user_request_log_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.setitem(request_logger.APP_CONFIG, "log_path", str(tmp_path))
+    monkeypatch.setattr(request_logger, "_LOG_PATH_CACHE", None)
+    monkeypatch.setattr(request_logger, "_REQUEST_LOG_FILE_CACHE", {})
+    monkeypatch.delenv("LLM_ROUTER_VERBOSE_REQUEST_LOG", raising=False)
+
+    body = b'{"messages":[{"role":"user","content":"hello"}]}'
+    ProxyService._maybe_log_verbose_user_request(123, body)
+
+    assert list(tmp_path.rglob("123.log")) == []
 
 
 def test_auto_route_without_active_target_model_records_router_result():

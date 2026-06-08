@@ -105,6 +105,8 @@ GUNICORN_THREADS=16 \
 ./start_prod.sh
 ```
 
+Use `./start_prod.sh --verbose` when per-request log files should include the user request content.
+
 Equivalent production Gunicorn command:
 
 ```bash

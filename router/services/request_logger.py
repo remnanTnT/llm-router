@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -7,8 +8,8 @@ from router.config import APP_CONFIG, BASE_DIR
 
 
 _LOG_PATH_CACHE: Path | None = None
-_LOG_DIR_CREATED: bool = False
-_ERROR_DIR_CACHE: dict[str, Path] = {}
+_REQUEST_LOG_FILE_CACHE: dict[int, Path] = {}
+_VERBOSE_REQUEST_LOG_ENV = "LLM_ROUTER_VERBOSE_REQUEST_LOG"
 
 
 def _resolve_log_path() -> Path:
@@ -21,32 +22,42 @@ def _resolve_log_path() -> Path:
     return _LOG_PATH_CACHE
 
 
+def _current_log_time() -> datetime:
+    return datetime.now()
+
+
+def _request_log_file(request_id: int) -> Path:
+    log_file = _REQUEST_LOG_FILE_CACHE.get(request_id)
+    if log_file is None:
+        now = _current_log_time()
+        log_file = (
+            _resolve_log_path()
+            / f"{now.year:04d}"
+            / f"{now.month:02d}"
+            / f"{now.day:02d}"
+            / f"{now.hour:02d}"
+            / f"{now.minute:02d}"
+            / f"{request_id}.log"
+        )
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        _REQUEST_LOG_FILE_CACHE[request_id] = log_file
+        if len(_REQUEST_LOG_FILE_CACHE) > 10000:
+            _REQUEST_LOG_FILE_CACHE.pop(next(iter(_REQUEST_LOG_FILE_CACHE)))
+    return log_file
+
+
+def verbose_request_logging_enabled() -> bool:
+    value = os.environ.get(_VERBOSE_REQUEST_LOG_ENV, "")
+    return value.strip().lower() in {"1", "true", "yes", "on", "verbose"}
+
+
 def append_request_log(request_id: int, message: str) -> None:
-    log_path = _resolve_log_path()
-    global _LOG_DIR_CREATED
-    if not _LOG_DIR_CREATED:
-        log_path.mkdir(parents=True, exist_ok=True)
-        _LOG_DIR_CREATED = True
-    with (log_path / f"{request_id}.log").open("a", encoding="utf-8") as handle:
+    with _request_log_file(request_id).open("a", encoding="utf-8") as handle:
         handle.write(message.rstrip() + "\n")
 
 
 def append_error_log(request_id: int, message: str) -> None:
-    log_path = _resolve_log_path()
-    now = datetime.now()
-    date_key = now.strftime("%Y%m%d")
-    error_dir = _ERROR_DIR_CACHE.get(date_key)
-    if error_dir is None:
-        error_dir = log_path / str(now.year) / f"{now.month:02d}" / f"{now.day:02d}"
-        error_dir.mkdir(parents=True, exist_ok=True)
-        _ERROR_DIR_CACHE[date_key] = error_dir
-        # Keep cache small
-        if len(_ERROR_DIR_CACHE) > 10:
-            oldest_key = min(_ERROR_DIR_CACHE.keys())
-            _ERROR_DIR_CACHE.pop(oldest_key)
-
-    with (error_dir / f"{request_id}.log").open("a", encoding="utf-8") as handle:
-        handle.write(message.rstrip() + "\n")
+    append_request_log(request_id, message)
 
 
 class RequestLogBuffer:
@@ -57,12 +68,7 @@ class RequestLogBuffer:
         self.messages.append(message)
 
     def flush(self, request_id: int) -> None:
-        log_path = _resolve_log_path()
-        global _LOG_DIR_CREATED
-        if not _LOG_DIR_CREATED:
-            log_path.mkdir(parents=True, exist_ok=True)
-            _LOG_DIR_CREATED = True
-        with (log_path / f"{request_id}.log").open("a", encoding="utf-8") as handle:
+        with _request_log_file(request_id).open("a", encoding="utf-8") as handle:
             for message in self.messages:
                 handle.write(message.rstrip() + "\n")
         self.messages.clear()

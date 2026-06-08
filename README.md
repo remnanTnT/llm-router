@@ -61,7 +61,7 @@ A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one 
   - `processing` row inserted at proxy start; admission denials inserted directly as `failed`
   - Per-attempt update of `attempt_count`, `target_pod_ip`, `prefix_cache` (best match ratio), `last_match` (matched request id)
   - Final state: `end_time`, `latency`, `status`, `task_status` (`success` / `failed` / `agent_disconnected` / `incomplete`), token counts; auto-creates `models` row on successful unknown-model response
-  - Per-request log file `logs/requests/<id>.log` and per-day error log `logs/requests/YYYY/MM/DD/<id>.log` with redacted sensitive headers
+  - Per-request log file `logs/requests/YYYY/MM/DD/HH/MM/<id>.log`; `./start_prod.sh --verbose` or `./start_test.sh --verbose` also records user request content in that file
   - Stale `processing` cleanup flips rows to `incomplete` and decrements workload counters
 
 - **Statistics & Monitoring API**
