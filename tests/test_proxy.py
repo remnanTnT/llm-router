@@ -191,6 +191,107 @@ def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
     assert "secret_tool" not in payload_text
 
 
+def test_auto_route_without_active_target_model_records_router_result():
+    service = ProxyService(chooser=_RoutingChooser())
+    model, router_result = service._get_auto_route_model(
+        b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model is None
+    assert router_result == (
+        "routing_failed:missing_target_model:no active target model for auto request"
+    )
+
+
+def test_auto_route_without_routing_model_uses_fallback_and_records_router_result(monkeypatch):
+    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+    Server.objects.create(model_id=fallback_model.id, base_url="http://deepseek.example", is_online=True)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing request should not be sent without routing models")
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://deepseek.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "DeepSeek-V4-Flash"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b'{"usage": {"prompt_tokens": 1, "completion_tokens": 2}}'
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "auto", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == fallback_model.id
+    assert record.task_status == "success"
+    assert record.router_result == (
+        "routing_failed:missing_routing_model:no routing model configured"
+    )
+
+
+def test_auto_route_invalid_routing_result_uses_fallback_and_records_router_result(monkeypatch):
+    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=fallback_model.id, base_url="http://deepseek.example", is_online=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "choices": [{"message": {"content": "not-a-configured-model"}}],
+        }
+        return response
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://deepseek.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "DeepSeek-V4-Flash"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b'{"usage": {"prompt_tokens": 1, "completion_tokens": 2}}'
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "auto", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == fallback_model.id
+    assert record.task_status == "success"
+    assert record.router_result == (
+        "routing_failed:invalid_routing_result:router returned no active model: not-a-configured-model"
+    )
+
+
 def test_update_body_model_can_disable_thinking():
     service = ProxyService(chooser=_RoutingChooser())
 
@@ -443,7 +544,7 @@ def test_auto_route_without_routing_server_uses_fallback_and_records_router_resu
     assert record.model_id == fallback_model.id
     assert record.task_status == "success"
     assert record.router_result == (
-        "routing_failed:no_available_server:no available server for routing request"
+        "routing_failed:missing_routing_server:no available routing server"
     )
 
 
