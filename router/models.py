@@ -55,6 +55,8 @@ class Model(models.Model):
     deprecation = models.CharField(max_length=500, blank=True, null=True)
     is_routing_model = models.BooleanField(default=False)
     max_context_window = models.IntegerField(default=204800)
+    complexity_min = models.IntegerField(blank=True, null=True)
+    complexity_max = models.IntegerField(blank=True, null=True)
 
     class Meta:
         managed = False

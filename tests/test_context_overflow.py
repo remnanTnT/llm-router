@@ -7,7 +7,12 @@ from router.models import Model, Server, RequestRecord
 def test_context_overflow_switches_to_flash_when_auto(monkeypatch):
     # Setup models
     flash_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
-    other_model = Model.objects.create(model_name="Other-Model", max_context_window=1000)
+    other_model = Model.objects.create(
+        model_name="Other-Model",
+        max_context_window=1000,
+        complexity_min=1,
+        complexity_max=10,
+    )
     
     # Setup servers
     Server.objects.create(model_id=other_model.id, base_url="http://other.example", is_online=True)
