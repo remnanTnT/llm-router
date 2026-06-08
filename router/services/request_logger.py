@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +58,25 @@ def append_request_log(request_id: int, message: str) -> None:
 
 
 def append_error_log(request_id: int, message: str) -> None:
+    append_request_log(request_id, message)
+
+
+def append_verbose_request_log(request_id: int, body: bytes) -> None:
+    if not verbose_request_logging_enabled():
+        return
+    try:
+        request_body = json.loads(body.decode("utf-8")) if body else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        request_body = body.decode("utf-8", errors="replace")
+    message = json.dumps(
+        {
+            "event": "user_request",
+            "request_id": request_id,
+            "body": request_body,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
     append_request_log(request_id, message)
 
 

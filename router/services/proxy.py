@@ -19,7 +19,7 @@ from router.services.cancellable_upstream import CancellableUpstreamRequest
 from router.services.circuit_breaker import CircuitBreakerService
 from router.services.disconnect import DisconnectWatcher
 from router.services.opencode import OpencodeVersionService
-from router.services.request_logger import append_request_log, append_error_log, verbose_request_logging_enabled
+from router.services.request_logger import append_request_log, append_error_log, append_verbose_request_log
 from router.services.vip_channel import VIPChannelService
 from router.route_algorithm.base import ServerSelectionContext
 from router.route_algorithm.least_connection import LeastConnectionServerChooser
@@ -219,47 +219,6 @@ class ProxyService:
         except Exception:
             pass
 
-    @staticmethod
-    def _maybe_log_verbose_user_request(request_id: int, body: bytes) -> None:
-        if not verbose_request_logging_enabled():
-            return
-        payload = ProxyService._user_request_log_payload(request_id, body)
-        if payload:
-            ProxyService._safe_append_request_log(request_id, json.dumps(payload, ensure_ascii=False))
-
-    @staticmethod
-    def _user_request_log_payload(request_id: int, body: bytes) -> dict[str, Any] | None:
-        payload: dict[str, Any] = {
-            "event": "user_request",
-            "request_id": request_id,
-        }
-        try:
-            data = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            if not body:
-                return None
-            payload["body"] = body.decode("utf-8", errors="replace")
-            return payload
-
-        if not isinstance(data, dict):
-            payload["body"] = data
-            return payload
-
-        user_messages = ProxyService._user_messages_from_body(body)
-        if user_messages:
-            payload["messages"] = user_messages
-            return payload
-
-        if "prompt" in data:
-            payload["prompt"] = data["prompt"]
-            return payload
-
-        if "input" in data:
-            payload["input"] = data["input"]
-            return payload
-
-        return None
-
     def _ensure_system_prompt(self, model_names: list[str]) -> None:
         if self._router_system_prompt is None:
             prompt_path = APP_CONFIG.get("router", {}).get("system_prompt_path", "router/assets/router_system_prompt.md")
@@ -312,7 +271,7 @@ class ProxyService:
     def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None, is_vip_channel: bool = False):
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
         record = self._create_processing_record(ip_id, model, parsed, user_agent)
-        self._maybe_log_verbose_user_request(record.id, parsed.body)
+        append_verbose_request_log(record.id, django_request.body)
         context = self._selection_context(record, ip_id, model, parsed, path, django_request.method)
         original_model_name = parsed.model_name
         should_record_model_choice = original_model_name == "auto" or self._should_route_small_request(parsed)
