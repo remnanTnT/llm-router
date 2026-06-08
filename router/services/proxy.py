@@ -81,10 +81,13 @@ class ProxyService:
     def _get_auto_route_model(self, body: bytes, record: Any, context: ServerSelectionContext) -> tuple[Any, str | None]:
         active_models = ModelRepository.list_active_models()
         if not active_models:
-            return None, None
-        
+            return None, self._routing_unavailable_result(
+                "missing_target_model",
+                "no active target model for auto request",
+            )
+
         model_names = [m.model_name for m in active_models]
-        
+
         cached_model = self._check_cache_hit(body, active_models, model_names)
         if cached_model:
             return cached_model, "cache_hit"
@@ -104,21 +107,24 @@ class ProxyService:
     def _query_routing_llm(self, body: bytes, record: Any, context: ServerSelectionContext, active_models: list[Any], model_names: list[str]) -> tuple[Any, str | None]:
         routing_models = ModelRepository.get_routing_models()
         if not routing_models:
-            return self._get_default_model(), "no_routing_model"
+            return self._get_default_model(), self._routing_unavailable_result(
+                "missing_routing_model",
+                "no routing model configured",
+            )
 
         routing_servers = []
         model_id_to_name = {rm.id: rm.model_name for rm in routing_models}
         for rm in routing_models:
             routing_servers.extend(ServerRepository.list_by_model_id(rm.id, vip=False, estimate_tokens=0))
-        
+
         if not routing_servers:
             return self._get_default_model(), self._routing_unavailable_result()
 
         server = self.chooser.choose(routing_servers, context, set()) or random.choice(routing_servers)
-        
+
         self._ensure_system_prompt(model_names)
         routing_model_name = model_id_to_name.get(server.model_id, "router")
-        
+
         payload = self._build_routing_payload(routing_model_name, body)
 
         url = self._build_url(server.base_url, "chat/completions", "")
@@ -149,7 +155,7 @@ class ProxyService:
                 if matched:
                     return matched, result
 
-        return self._get_default_model(), "fallback"
+        return self._get_default_model(), self._invalid_routing_result(result)
 
     def _routing_response_error_result(self, response) -> str:
         status_code = getattr(response, "status_code", None)
@@ -161,17 +167,30 @@ class ProxyService:
     def _routing_exception_result(self, exc: Exception, status_code: int | None = None) -> str:
         return self._format_router_result("routing_error", status_code, str(exc))
 
-    def _routing_unavailable_result(self) -> str:
+    def _routing_unavailable_result(
+        self,
+        code: str = "missing_routing_server",
+        message: str = "no available routing server",
+    ) -> str:
+        return self._format_router_result("routing_failed", code, message)
+
+    def _invalid_routing_result(self, result: str) -> str:
+        detail = self._compact_router_message(result) or "empty routing result"
         return self._format_router_result(
             "routing_failed",
-            "no_available_server",
-            "no available server for routing request",
+            "invalid_routing_result",
+            f"router returned no active model: {detail}",
         )
 
     @staticmethod
     def _format_router_result(prefix: str, status_code: int | str | None, message: str) -> str:
         code = str(status_code) if status_code is not None else "exception"
-        return f"{prefix}:{code}:{message}"[:100]
+        detail = ProxyService._compact_router_message(message)
+        return f"{prefix}:{code}:{detail}"[:100]
+
+    @staticmethod
+    def _compact_router_message(message: Any) -> str:
+        return " ".join(str(message or "").split())
 
     @staticmethod
     def _response_content_bytes(response) -> bytes:
