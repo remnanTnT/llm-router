@@ -19,7 +19,7 @@ from router.services.cancellable_upstream import CancellableUpstreamRequest
 from router.services.circuit_breaker import CircuitBreakerService
 from router.services.disconnect import DisconnectWatcher
 from router.services.opencode import OpencodeVersionService
-from router.services.request_logger import append_request_log, append_error_log
+from router.services.request_logger import append_request_log, append_error_log, append_verbose_request_log
 from router.services.vip_channel import VIPChannelService
 from router.route_algorithm.base import ServerSelectionContext
 from router.route_algorithm.least_connection import LeastConnectionServerChooser
@@ -271,6 +271,7 @@ class ProxyService:
     def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None, is_vip_channel: bool = False):
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
         record = self._create_processing_record(ip_id, model, parsed, user_agent)
+        append_verbose_request_log(record.id, django_request.body)
         context = self._selection_context(record, ip_id, model, parsed, path, django_request.method)
         original_model_name = parsed.model_name
         should_record_model_choice = original_model_name == "auto" or self._should_route_small_request(parsed)

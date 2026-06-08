@@ -6,6 +6,8 @@ cd "$(dirname "$0")"
 export DB_HOST="${DB_HOST:-localhost}"
 export DB_PORT="${DB_PORT:-5431}"
 export LLM_ROUTER_CONFIG="${LLM_ROUTER_CONFIG:-$(pwd)/config.yaml}"
+export LLM_ROUTER_LOG_PATH="${LLM_ROUTER_LOG_PATH:-/data/router_log}"
+export LLM_ROUTER_VERBOSE_REQUEST_LOG=0
 export HTTP_PORT="${HTTP_PORT:-8001}"
 export VIP_PORT="${VIP_PORT:-8008}"
 export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"

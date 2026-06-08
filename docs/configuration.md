@@ -59,6 +59,8 @@ database:
   sslmode: disable
 ```
 
+Request logs are written below `log_path` as `YYYY/MM/DD/HH/MM/<request_id>.log`. `start_prod.sh` defaults `log_path` to `/data/router_log` and disables verbose request logging. `start_test.sh` defaults `log_path` to `.logs/requests` and enables a `user_request` event containing the full request body as pretty JSON.
+
 Point the router to another config file with:
 
 ```bash
@@ -67,7 +69,9 @@ export LLM_ROUTER_CONFIG=/path/to/config.yaml
 
 ## Environment Variables
 
-Database and listener values can be overridden with environment variables:
+Database, listener, and log values can be overridden with environment variables:
+
+- `LLM_ROUTER_LOG_PATH` overrides `log_path`.
 
 ```bash
 export DB_HOST=localhost
@@ -78,6 +82,7 @@ export DB_NAME=postgres
 export DB_SSLMODE=disable
 export HTTP_PORT=8001
 export VIP_PORT=8008
+export LLM_ROUTER_LOG_PATH=/data/router_log
 ```
 
 Other useful environment variables:
