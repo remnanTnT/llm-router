@@ -59,11 +59,15 @@ CREATE INDEX servers_online_model_idx
 ```sql
 ALTER TABLE models ADD COLUMN vip INTEGER NULL;
 ALTER TABLE models ADD COLUMN deprecation VARCHAR(500) NULL;
+ALTER TABLE models ADD COLUMN complexity_min INTEGER NULL;
+ALTER TABLE models ADD COLUMN complexity_max INTEGER NULL;
 ```
 
 `vip` is admin-managed. Set it to a positive integer to enable VIP routing for that model: it is the per-active-VIP-server workload threshold above which the router promotes another normal server into the VIP pool. `NULL` or `0` disables VIP routing for the model — VIP-port traffic from VIP-authorized IPs for it is served from the normal pool.
 
 `deprecation` is admin-managed. If it is not `NULL`, the router will return a 400 error with the value of this column as the error message, effectively disabling the model.
+
+`complexity_min` and `complexity_max` are admin-managed auto-routing bounds. For an `auto` request, the routing model returns a complexity score from 1 to 10, and the router selects the active model whose inclusive range contains that score. If either column is `NULL`, the model is excluded from auto selection. Overlapping ranges are resolved by the narrowest range first, then lower `complexity_max`, then lower model id.
 
 ## Request-Table Indexes
 

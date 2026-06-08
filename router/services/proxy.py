@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -79,20 +80,20 @@ class ProxyService:
         self._router_system_prompt = None
 
     def _get_auto_route_model(self, body: bytes, record: Any, context: ServerSelectionContext) -> tuple[Any, str | None]:
-        active_models = ModelRepository.list_active_models()
-        if not active_models:
+        auto_models = ModelRepository.list_auto_selectable_models()
+        if not auto_models:
             return None, self._routing_unavailable_result(
                 "missing_target_model",
-                "no active target model for auto request",
+                "no auto-selectable target model for auto request",
             )
 
-        model_names = [m.model_name for m in active_models]
+        model_names = [m.model_name for m in auto_models]
 
-        cached_model = self._check_cache_hit(body, active_models, model_names)
+        cached_model = self._check_cache_hit(body, auto_models, model_names)
         if cached_model:
             return cached_model, "cache_hit"
 
-        return self._query_routing_llm(body, record, context, active_models, model_names)
+        return self._query_routing_llm(body, record, context, auto_models, model_names)
 
     def _check_cache_hit(self, body: bytes, active_models: list[Any], model_names: list[str]) -> Any | None:
         chooser = self.chooser
@@ -105,9 +106,20 @@ class ProxyService:
         return None
 
     def _query_routing_llm(self, body: bytes, record: Any, context: ServerSelectionContext, active_models: list[Any], model_names: list[str]) -> tuple[Any, str | None]:
+        complexity, router_result = self._query_routing_complexity(body, record, context, model_names)
+        if complexity is None:
+            return self._get_default_model(), router_result
+
+        matched = self._model_for_complexity(active_models, complexity)
+        if matched:
+            return matched, router_result
+
+        return self._get_default_model(), self._no_model_for_complexity_result(complexity)
+
+    def _query_routing_complexity(self, body: bytes, record: Any, context: ServerSelectionContext, model_names: list[str] | None = None) -> tuple[int | None, str | None]:
         routing_models = ModelRepository.get_routing_models()
         if not routing_models:
-            return self._get_default_model(), self._routing_unavailable_result(
+            return None, self._routing_unavailable_result(
                 "missing_routing_model",
                 "no routing model configured",
             )
@@ -118,7 +130,7 @@ class ProxyService:
             routing_servers.extend(ServerRepository.list_by_model_id(rm.id, vip=False, estimate_tokens=0))
 
         if not routing_servers:
-            return self._get_default_model(), self._routing_unavailable_result()
+            return None, self._routing_unavailable_result()
 
         server = self.chooser.choose(routing_servers, context, set()) or random.choice(routing_servers)
 
@@ -137,25 +149,23 @@ class ProxyService:
         except Exception as e:
             router_result = self._routing_exception_result(e)
             self._safe_append_request_log(record.id, f"Routing LLM error: {str(e)}")
-            return self._get_default_model(), router_result
+            return None, router_result
 
         if resp.status_code != 200:
-            return self._get_default_model(), self._routing_response_error_result(resp)
+            return None, self._routing_response_error_result(resp)
 
         try:
             result = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         except Exception as e:
             router_result = self._routing_exception_result(e, status_code=resp.status_code)
             self._safe_append_request_log(record.id, f"Routing LLM error: {str(e)}")
-            return self._get_default_model(), router_result
+            return None, router_result
 
-        for name in model_names:
-            if name in result:
-                matched = next((m for m in active_models if m.model_name == name), None)
-                if matched:
-                    return matched, result
+        complexity = self._routing_complexity(result)
+        if complexity is None:
+            return None, self._invalid_routing_result(result)
 
-        return self._get_default_model(), self._invalid_routing_result(result)
+        return complexity, self._complexity_routing_result(complexity)
 
     def _routing_response_error_result(self, response) -> str:
         status_code = getattr(response, "status_code", None)
@@ -179,8 +189,82 @@ class ProxyService:
         return self._format_router_result(
             "routing_failed",
             "invalid_routing_result",
-            f"router returned no active model: {detail}",
+            f"router returned no valid complexity: {detail}",
         )
+
+    def _no_model_for_complexity_result(self, complexity: int) -> str:
+        return self._format_router_result(
+            "routing_failed",
+            "no_model_for_complexity",
+            f"complexity {complexity} has no matching auto-selectable model",
+        )
+
+    @staticmethod
+    def _complexity_routing_result(complexity: int) -> str:
+        return f"complexity:{complexity}"
+
+    @classmethod
+    def _routing_complexity(cls, result: str) -> int | None:
+        text = str(result or "")
+        try:
+            parsed = json.loads(cls._strip_json_fence(text))
+        except (TypeError, json.JSONDecodeError):
+            return cls._extract_complexity_number(text)
+
+        value = parsed.get("complexity") if isinstance(parsed, dict) else parsed
+        complexity = cls._complexity_from_value(value)
+        if complexity is not None:
+            return complexity
+        return cls._extract_complexity_number(text)
+
+    @staticmethod
+    def _complexity_from_value(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            complexity = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            complexity = int(value.strip())
+        else:
+            return None
+        return complexity if 1 <= complexity <= 10 else None
+
+    @staticmethod
+    def _extract_complexity_number(text: str) -> int | None:
+        for match in re.finditer(r"(?<![\d.])(10|[1-9])(?!\.\d)(?!\d)", str(text or "")):
+            return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _model_for_complexity(models: list[Any], complexity: int) -> Any | None:
+        matching = [
+            model for model in models
+            if model.complexity_min is not None
+            and model.complexity_max is not None
+            and model.complexity_min <= complexity <= model.complexity_max
+        ]
+        if not matching:
+            return None
+        return min(
+            matching,
+            key=lambda model: (
+                model.complexity_max - model.complexity_min,
+                model.complexity_max,
+                model.id,
+            ),
+        )
+
+    @staticmethod
+    def _strip_json_fence(result: str) -> str:
+        text = str(result or "").strip()
+        if not text.startswith("```"):
+            return text
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
 
     @staticmethod
     def _format_router_result(prefix: str, status_code: int | str | None, message: str) -> str:
@@ -226,7 +310,11 @@ class ProxyService:
                 with open(prompt_path, "r") as f:
                     self._router_system_prompt = f.read()
             except Exception:
-                self._router_system_prompt = "You are a router. Return one of: " + ", ".join(model_names)
+                self._router_system_prompt = (
+                    "You are an LLM request complexity classifier. "
+                    'Return only compact JSON like {"complexity":5}, '
+                    "where complexity is an integer from 1 to 10."
+                )
 
     def _build_routing_payload(self, model_name: str, body: bytes) -> dict[str, Any]:
         payload = {
@@ -274,12 +362,18 @@ class ProxyService:
         append_verbose_request_log(record.id, django_request.body)
         context = self._selection_context(record, ip_id, model, parsed, path, django_request.method)
         original_model_name = parsed.model_name
-        should_record_model_choice = original_model_name == "auto" or self._should_route_small_request(parsed)
+        should_record_model_choice = (
+            original_model_name == "auto"
+            or self._should_route_small_request(parsed)
+            or model is not None
+        )
         model_choice_started = time.monotonic() if should_record_model_choice else None
         try:
             model, router_result = self._resolve_small_request_routing_model(parsed, record, context, model)
             if router_result is None:
                 model, router_result = self._resolve_auto_model(parsed, record, context, model)
+            if router_result is None:
+                router_result = self._resolve_non_auto_routing_result(parsed, record, context, model)
         finally:
             if model_choice_started is not None:
                 RequestRepository.record_model_choosing_latency(
@@ -335,6 +429,22 @@ class ProxyService:
         if model:
             self._apply_resolved_model(parsed, record, context, model)
         return model, router_result
+
+    def _resolve_non_auto_routing_result(self, parsed, record, context: ServerSelectionContext, model) -> str | None:
+        if parsed.model_name == "auto" or model is None:
+            return None
+
+        cached_model = self._check_cache_hit(parsed.body, [model], [model.model_name])
+        if cached_model:
+            return "cache_hit"
+
+        _, router_result = self._query_routing_complexity(
+            parsed.body,
+            record,
+            context,
+            [model.model_name],
+        )
+        return router_result
 
     def _resolve_small_request_routing_model(self, parsed, record, context: ServerSelectionContext, model):
         if not self._should_route_small_request(parsed):
