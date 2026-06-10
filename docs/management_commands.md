@@ -45,3 +45,12 @@ Demotes VIP servers whose `vip_cooldown` timestamp is older than the configured 
 python manage.py prod release_vip_cooldowns
 python manage.py prod release_vip_cooldowns --cooldown 600 --dry-run
 ```
+
+## `refresh_user_info`
+
+Refresh `user_ips` table from CMDB source. Requires `cmdb.enabled` to be true in `config.yaml`. Supports dry-run mode to generate SQL without applying changes.
+
+```bash
+python manage.py prod refresh_user_info --dry-run
+python manage.py prod refresh_user_info --ip 127.0.0.1
+```

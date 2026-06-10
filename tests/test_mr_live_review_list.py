@@ -69,9 +69,9 @@ def test_mr_live_review_list_valid():
         "fix_suggestion": "fix it",
         "confidence_score": "0.9",
         "line": 10,
-        "created_at": "2023-01-01T00:00:00Z",
+        "diff_file": "file1.py",
+        "created_at": "2023-01-01 00:00:00",
     }
-
 
 @pytest.mark.django_db
 def test_mr_live_review_list_invalid_and_no_reply():
@@ -134,13 +134,13 @@ def test_mr_live_review_list_pagination():
     assert body["page"] == 1
     assert body["page_size"] == 10
     assert len(body["data"]) == 10
-    assert body["data"][0]["created_at"] == "2023-01-25T00:00:00Z"
+    assert body["data"][0]["created_at"] == "2023-01-25 00:00:00"
 
     # Custom page_size and a middle page.
     body = client.get("/api/mr_live_review/list", {**params, "page": 2, "page_size": 20}).json()
     assert body["total"] == 25
     assert len(body["data"]) == 5
-    assert body["data"][0]["created_at"] == "2023-01-05T00:00:00Z"
+    assert body["data"][0]["created_at"] == "2023-01-05 00:00:00"
 
     # Page beyond the data returns an empty list, not an error.
     body = client.get("/api/mr_live_review/list", {**params, "page": 99}).json()

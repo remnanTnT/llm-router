@@ -3,7 +3,7 @@ from django.test import Client
 
 
 @pytest.fixture
-def sample_reviews(db):
+def sample_reviews():
     from router.models import MrLiveReview
 
     reviews = [
@@ -195,8 +195,10 @@ def test_stats_by_date_no_reply(sample_reviews):
     assert response.status_code == 200
     data = response.json()
     assert data["code"] == 200
-    assert data["data"][0]["date"] == "2026-06-02"
-    assert data["data"][0]["count"] == 1  # 1 no_reply on 2026-06-02
+    assert data["data"][0]["date"] == "2026-06-01"
+    assert data["data"][0]["count"] == 0
+    assert data["data"][1]["date"] == "2026-06-02"
+    assert data["data"][1]["count"] == 1  # 1 no_reply on 2026-06-02
 
 
 @pytest.mark.django_db

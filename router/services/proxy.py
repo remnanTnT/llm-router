@@ -101,7 +101,7 @@ class ProxyService:
             ratios = chooser.get_all_model_prefix_ratios(body, model_names)
             if ratios:
                 best_name = max(ratios, key=ratios.get)
-                if ratios[best_name] > 0.9:
+                if ratios[best_name] > 0.7:
                     return next((m for m in active_models if m.model_name == best_name), None)
         return None
 
@@ -343,14 +343,26 @@ class ProxyService:
         if not isinstance(source_messages, list):
             return []
 
-        user_messages: list[dict[str, Any]] = []
+        user_contents: list[str] = []
         for message in source_messages:
             if not isinstance(message, dict) or message.get("role") != "user":
                 continue
-            if "content" not in message:
+            content = message.get("content")
+            if not isinstance(content, str):
                 continue
-            user_messages.append({"role": "user", "content": message["content"]})
-        return user_messages
+            user_contents.append(content)
+
+        last_three = user_contents[-3:]
+        formatted_messages: list[dict[str, Any]] = []
+        ordinals = ["1st", "2nd", "3rd"]
+        
+        for i, content in enumerate(last_three):
+            ordinal = ordinals[i] if i < len(ordinals) else f"{i+1}th"
+            formatted_messages.append({
+                "role": "user",
+                "content": f"Here is the user's {ordinal} message:\n```\n{content}\n```\n"
+            })
+        return formatted_messages
 
     def _get_default_model(self) -> Any:
         name = APP_CONFIG.get("router", {}).get("fallback_model", "DeepSeek-V4-Flash")
