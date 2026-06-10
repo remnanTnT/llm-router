@@ -77,9 +77,10 @@ def proxy(request, path: str):
         parser = RequestParser(int(APP_CONFIG.get("proxy", {}).get("default_max_tokens", 8528)))
         parsed = parser.parse(body)
         input_model_name = parsed.model_name
-        model = ModelRepository.get_by_name(input_model_name)
+        input_is_auto = ModelRepository.is_auto_model_name(input_model_name)
+        model = None if input_is_auto else ModelRepository.get_by_name(input_model_name)
 
-        if input_model_name and input_model_name != "auto" and model is None:
+        if input_model_name and not input_is_auto and model is None:
             message = f"Model {input_model_name} is not supported."
             RequestRepository.create_blocked(ip.id, 0, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_full_body_tokens)
             return error_response(400, message, "invalid_request_error")
@@ -96,7 +97,11 @@ def proxy(request, path: str):
             return error_response(max_token_check.status_code, message, max_token_check.error_type or "invalid_request_error")
 
         if not is_vip_channel:
-            concurrency = admission.check_concurrency(ip, model, is_auto=(parsed.model_name == "auto"))
+            concurrency = admission.check_concurrency(
+                ip,
+                model,
+                is_auto=input_is_auto or ModelRepository.should_auto_select(model),
+            )
             if not concurrency.allowed:
                 message = concurrency.message or "concurrent limit exceeded"
                 RequestRepository.create_blocked(ip.id, model.id if model else 0, parsed.stream, user_agent, 429, message, estimate_tokens=parsed.estimated_full_body_tokens)

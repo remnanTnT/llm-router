@@ -4,7 +4,8 @@ from unittest.mock import MagicMock
 from django.test import Client
 from django.utils import timezone
 
-from router.models import Model, RequestRecord, Server
+from router.config import APP_CONFIG
+from router.models import IP, Model, RequestRecord, Server
 from router.route_algorithm.base import ServerSelectionContext
 from router.services.proxy import ProxyService
 
@@ -85,7 +86,7 @@ class _PrefixCacheChooser(_RoutingChooser):
 
 
 def test_auto_route_request_disables_thinking(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
@@ -128,12 +129,15 @@ def test_auto_route_request_disables_thinking(monkeypatch):
     assert sent["url"] == "http://router.example/chat/completions"
     assert sent["json"]["model"] == "router-model"
     assert sent["json"]["stream"] is False
-    assert sent["json"]["messages"][-1] == {"role": "user", "content": "hello"}
+    assert sent["json"]["messages"][-1] == {
+        "role": "user",
+        "content": "Here is the user's 1st message:\n```\nhello\n```\n",
+    }
     assert sent["json"]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
@@ -186,8 +190,14 @@ def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
     assert router_result == "complexity:4"
     assert sent["json"]["messages"][0]["role"] == "system"
     assert sent["json"]["messages"][1:] == [
-        {"role": "user", "content": "first user request"},
-        {"role": "user", "content": [{"type": "text", "text": "second user request"}]},
+        {
+            "role": "user",
+            "content": "Here is the user's 1st message:\n```\nfirst user request\n```\n",
+        },
+        {
+            "role": "user",
+            "content": "Here is the user's 2nd message:\n```\nsecond user request\n```\n",
+        },
     ]
     payload_text = json.dumps(sent["json"])
     assert "user system prompt" not in payload_text
@@ -215,7 +225,8 @@ def test_auto_route_without_active_target_model_records_router_result():
 
 def test_auto_route_prefix_cache_uses_only_auto_selectable_models(monkeypatch):
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    ignored_model = Model.objects.create(model_name="ignored-model", complexity_min=1, complexity_max=10)
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("routing request should not be sent on prefix-cache hit")
@@ -230,13 +241,144 @@ def test_auto_route_prefix_cache_uses_only_auto_selectable_models(monkeypatch):
     )
 
     assert model == target_model
+    assert ignored_model.auto is False
     assert routing_model.complexity_min is None
     assert router_result == "cache_hit"
 
 
+def test_case_insensitive_auto_request_selects_target_model(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+    monkeypatch.setattr("router.services.proxy.ProxyService.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://target.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "target-model"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "AUTO", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == target_model.id
+    assert record.router_result == "complexity:5"
+
+
+def test_model_auto_flag_triggers_auto_selection_on_normal_channel(monkeypatch):
+    source_model = Model.objects.create(model_name="source-model", auto=True)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=source_model.id, base_url="http://source.example", is_online=True)
+    Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+    monkeypatch.setattr("router.services.proxy.ProxyService.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":4}'}}]}
+        return response
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://target.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "target-model"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "source-model", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == target_model.id
+    assert record.router_result == "complexity:4"
+
+
+def test_model_auto_flag_keeps_original_model_on_vip_channel(monkeypatch):
+    source_model = Model.objects.create(model_name="source-model", auto=True)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=source_model.id, base_url="http://source.example", is_online=True)
+    Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+    monkeypatch.setitem(APP_CONFIG.setdefault("server", {}), "vip_port", 8008)
+    IP.objects.create(ip="10.10.10.12", concurrent_multiplier=1.0, vip=True)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing request should not be sent for concrete VIP model requests")
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://source.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "source-model"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "source-model", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+        SERVER_PORT="8008",
+        REMOTE_ADDR="10.10.10.12",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == source_model.id
+    assert record.router_result is None
+
+
 def test_auto_route_multiple_matching_complexity_ranges_use_fallback(monkeypatch):
-    broad_model = Model.objects.create(model_name="broad-model", complexity_min=1, complexity_max=10)
-    narrow_model = Model.objects.create(model_name="narrow-model", complexity_min=7, complexity_max=8)
+    broad_model = Model.objects.create(model_name="broad-model", auto=True, complexity_min=1, complexity_max=10)
+    narrow_model = Model.objects.create(model_name="narrow-model", auto=True, complexity_min=7, complexity_max=8)
     fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
@@ -275,7 +417,7 @@ def test_auto_route_multiple_matching_complexity_ranges_use_fallback(monkeypatch
 
 
 def test_auto_route_without_matching_complexity_uses_fallback(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=3)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=3)
     fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
@@ -313,7 +455,7 @@ def test_auto_route_without_matching_complexity_uses_fallback(monkeypatch):
 
 
 def test_auto_route_invalid_complexity_uses_fallback(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
@@ -358,7 +500,7 @@ def test_routing_complexity_extracts_numbers_from_imperfect_responses():
 
 
 def test_small_auto_request_uses_routing_model_before_complexity(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
@@ -399,7 +541,7 @@ def test_small_auto_request_uses_routing_model_before_complexity(monkeypatch):
 
 
 def test_auto_route_without_routing_model_uses_fallback_and_records_router_result(monkeypatch):
-    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash", complexity_min=1, complexity_max=10)
+    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash", auto=True, complexity_min=1, complexity_max=10)
     Server.objects.create(model_id=fallback_model.id, base_url="http://deepseek.example", is_online=True)
 
     def fail_if_called(*args, **kwargs):
@@ -439,7 +581,7 @@ def test_auto_route_without_routing_model_uses_fallback_and_records_router_resul
 
 
 def test_small_auto_request_uses_routing_model_directly(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
@@ -541,18 +683,14 @@ def test_small_non_auto_request_uses_routing_server_and_disables_thinking(monkey
     assert response.status_code == 200
 
 
-def test_three_thousand_token_non_auto_request_records_routing_but_keeps_user_model(monkeypatch):
+def test_three_thousand_token_non_auto_request_skips_unneeded_routing(monkeypatch):
     user_model = Model.objects.create(model_name="user-model")
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=user_model.id, base_url="http://user.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
 
-    def fake_post(url, json, headers, timeout):
-        assert url == "http://router.example/chat/completions"
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"choices": [{"message": {"content": "complexity is 4"}}]}
-        return response
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing LLM should not be called for explicit model requests")
 
     def fake_request(self_inner, method, url, **kwargs):
         assert url == "http://user.example/chat/completions"
@@ -566,7 +704,7 @@ def test_three_thousand_token_non_auto_request_records_routing_but_keeps_user_mo
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -596,10 +734,10 @@ def test_three_thousand_token_non_auto_request_records_routing_but_keeps_user_mo
     assert response.status_code == 200
     record = RequestRecord.objects.get()
     assert record.model_id == user_model.id
-    assert record.router_result == "complexity:4"
+    assert record.router_result is None
 
 
-def test_non_auto_prefix_cache_hit_skips_routing_llm_and_keeps_user_model(monkeypatch):
+def test_non_auto_request_does_not_call_routing_llm_and_keeps_user_model(monkeypatch):
     user_model = Model.objects.create(model_name="user-model")
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=user_model.id, base_url="http://user.example", is_online=True)
@@ -649,11 +787,11 @@ def test_non_auto_prefix_cache_hit_skips_routing_llm_and_keeps_user_model(monkey
     assert response.status_code == 200
     record = RequestRecord.objects.get()
     assert record.model_id == user_model.id
-    assert record.router_result == "cache_hit"
+    assert record.router_result is None
 
 
 def test_small_auto_request_records_small_request_latency(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
@@ -708,7 +846,7 @@ def test_small_auto_request_records_small_request_latency(monkeypatch):
 
 
 def test_small_auto_request_routes_directly_to_routing_server(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
@@ -748,7 +886,7 @@ def test_small_auto_request_routes_directly_to_routing_server(monkeypatch):
 
 
 def test_auto_route_without_routing_server_uses_fallback_and_records_router_result(monkeypatch):
-    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash", complexity_min=1, complexity_max=10)
+    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash", auto=True, complexity_min=1, complexity_max=10)
     Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=fallback_model.id, base_url="http://deepseek.example", is_online=True)
 
@@ -789,7 +927,7 @@ def test_auto_route_without_routing_server_uses_fallback_and_records_router_resu
 
 
 def test_small_auto_request_succeeds_with_routing_server(monkeypatch):
-    target_model = Model.objects.create(model_name="target-model", complexity_min=1, complexity_max=10)
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)

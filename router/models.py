@@ -54,9 +54,11 @@ class Model(models.Model):
     vip = models.IntegerField(blank=True, null=True)
     deprecation = models.CharField(max_length=500, blank=True, null=True)
     is_routing_model = models.BooleanField(default=False)
+    auto = models.BooleanField(default=False)
     max_context_window = models.IntegerField(default=204800)
     complexity_min = models.IntegerField(blank=True, null=True)
     complexity_max = models.IntegerField(blank=True, null=True)
+    multimodal = models.BooleanField(default=False)
 
     class Meta:
         managed = False

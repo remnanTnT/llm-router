@@ -41,12 +41,16 @@ def api_test_tables():
         # New router fields
         if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "is_routing_model"):
             schema_editor.add_field(Model, Model._meta.get_field("is_routing_model"))
+        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "auto"):
+            schema_editor.add_field(Model, Model._meta.get_field("auto"))
         if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "max_context_window"):
             schema_editor.add_field(Model, Model._meta.get_field("max_context_window"))
         if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "complexity_min"):
             schema_editor.add_field(Model, Model._meta.get_field("complexity_min"))
         if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "complexity_max"):
             schema_editor.add_field(Model, Model._meta.get_field("complexity_max"))
+        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "multimodal"):
+            schema_editor.add_field(Model, Model._meta.get_field("multimodal"))
         if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "router_result"):
             schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("router_result"))
         if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "estimate_tokens"):

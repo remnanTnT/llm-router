@@ -80,6 +80,11 @@ class ProxyService:
         self._router_system_prompt = None
 
     def _get_auto_route_model(self, body: bytes, record: Any, context: ServerSelectionContext) -> tuple[Any, str | None]:
+        if self._is_multimodal(body):
+            model = ModelRepository.get_multimodal_model()
+            if model:
+                return model, "multimodal_bypass"
+
         auto_models = ModelRepository.list_auto_selectable_models()
         if not auto_models:
             return None, self._routing_unavailable_result(
@@ -94,6 +99,16 @@ class ProxyService:
             return cached_model, "cache_hit"
 
         return self._query_routing_llm(body, record, context, auto_models, model_names)
+
+    def _is_multimodal(self, body: bytes) -> bool:
+        try:
+            data = json.loads(body.decode("utf-8"))
+            for message in data.get("messages", []):
+                if isinstance(message.get("content"), list):
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _check_cache_hit(self, body: bytes, active_models: list[Any], model_names: list[str]) -> Any | None:
         chooser = self.chooser
@@ -140,6 +155,9 @@ class ProxyService:
         routing_model_name = model_id_to_name.get(server.model_id, "router")
 
         payload = self._build_routing_payload(routing_model_name, body)
+        # Skip routing LLM if there are no user messages (only system prompt)
+        if len(payload.get("messages", [])) <= 1:
+            return None, "no_user_query"
 
         url = self._build_url(server.base_url, "chat/completions", "")
         headers = {"Content-Type": "application/json"}
@@ -348,14 +366,22 @@ class ProxyService:
             if not isinstance(message, dict) or message.get("role") != "user":
                 continue
             content = message.get("content")
-            if not isinstance(content, str):
-                continue
-            user_contents.append(content)
+            if isinstance(content, str):
+                user_contents.append(content)
+            elif isinstance(content, list):
+                # Extract text parts from multi-part content (multimodal/text blocks)
+                text_parts = [
+                    p.get("text", "")
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                if text_parts:
+                    user_contents.append(" ".join(text_parts))
 
         last_three = user_contents[-3:]
         formatted_messages: list[dict[str, Any]] = []
         ordinals = ["1st", "2nd", "3rd"]
-        
+
         for i, content in enumerate(last_three):
             ordinal = ordinals[i] if i < len(ordinals) else f"{i+1}th"
             formatted_messages.append({
@@ -372,20 +398,37 @@ class ProxyService:
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
         record = self._create_processing_record(ip_id, model, parsed, user_agent)
         append_verbose_request_log(record.id, django_request.body)
-        context = self._selection_context(record, ip_id, model, parsed, path, django_request.method)
-        original_model_name = parsed.model_name
+        auto_model_selection = self._should_auto_select(parsed, model, is_vip_channel)
+        context = self._selection_context(
+            record,
+            ip_id,
+            model,
+            parsed,
+            path,
+            django_request.method,
+            auto_model_selection,
+        )
         should_record_model_choice = (
-            original_model_name == "auto"
-            or self._should_route_small_request(parsed)
-            or model is not None
+            auto_model_selection
+            or (not is_vip_channel and self._should_route_small_request(parsed))
         )
         model_choice_started = time.monotonic() if should_record_model_choice else None
         try:
-            model, router_result = self._resolve_small_request_routing_model(parsed, record, context, model)
+            model, router_result = self._resolve_small_request_routing_model(
+                parsed,
+                record,
+                context,
+                model,
+                is_vip_channel,
+            )
             if router_result is None:
-                model, router_result = self._resolve_auto_model(parsed, record, context, model)
-            if router_result is None:
-                router_result = self._resolve_non_auto_routing_result(parsed, record, context, model)
+                model, router_result = self._resolve_auto_model(
+                    parsed,
+                    record,
+                    context,
+                    model,
+                    auto_model_selection,
+                )
         finally:
             if model_choice_started is not None:
                 RequestRepository.record_model_choosing_latency(
@@ -420,7 +463,15 @@ class ProxyService:
         )
 
     @staticmethod
-    def _selection_context(record, ip_id: int | None, model, parsed, path: str, method: str) -> ServerSelectionContext:
+    def _selection_context(
+        record,
+        ip_id: int | None,
+        model,
+        parsed,
+        path: str,
+        method: str,
+        auto_model_selection: bool,
+    ) -> ServerSelectionContext:
         return ServerSelectionContext(
             request_id=record.id,
             ip_id=ip_id,
@@ -431,10 +482,19 @@ class ProxyService:
             is_stream=parsed.stream,
             body=parsed.body,
             origin_model_name=parsed.model_name,
+            auto_model_selection=auto_model_selection,
         )
 
-    def _resolve_auto_model(self, parsed, record, context: ServerSelectionContext, model):
-        if parsed.model_name != "auto":
+    @staticmethod
+    def _should_auto_select(parsed, model, is_vip_channel: bool) -> bool:
+        if ModelRepository.is_auto_model_name(parsed.model_name):
+            return True
+        if is_vip_channel:
+            return False
+        return ModelRepository.should_auto_select(model)
+
+    def _resolve_auto_model(self, parsed, record, context: ServerSelectionContext, model, auto_model_selection: bool):
+        if not auto_model_selection:
             return model, None
 
         model, router_result = self._get_auto_route_model(parsed.body, record, context)
@@ -442,24 +502,8 @@ class ProxyService:
             self._apply_resolved_model(parsed, record, context, model)
         return model, router_result
 
-    def _resolve_non_auto_routing_result(self, parsed, record, context: ServerSelectionContext, model) -> str | None:
-        if parsed.model_name == "auto" or model is None:
-            return None
-
-        cached_model = self._check_cache_hit(parsed.body, [model], [model.model_name])
-        if cached_model:
-            return "cache_hit"
-
-        _, router_result = self._query_routing_complexity(
-            parsed.body,
-            record,
-            context,
-            [model.model_name],
-        )
-        return router_result
-
-    def _resolve_small_request_routing_model(self, parsed, record, context: ServerSelectionContext, model):
-        if not self._should_route_small_request(parsed):
+    def _resolve_small_request_routing_model(self, parsed, record, context: ServerSelectionContext, model, is_vip_channel: bool):
+        if is_vip_channel or not self._should_route_small_request(parsed):
             return model, None
 
         routing_model = self._get_small_request_routing_model(parsed.estimated_full_body_tokens)
@@ -825,7 +869,7 @@ class ProxyService:
         return response
 
     def _context_overflow_switch(self, record, context, path, served_as_vip, body, model, status_code, fail_reason):
-        if context.origin_model_name != "auto":
+        if not getattr(context, "auto_model_selection", False):
             return None, None, body
         if not model or model.model_name == "DeepSeek-V4-Flash":
             return None, None, body
