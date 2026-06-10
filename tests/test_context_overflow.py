@@ -9,6 +9,7 @@ def test_context_overflow_switches_to_flash_when_auto(monkeypatch):
     flash_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
     other_model = Model.objects.create(
         model_name="Other-Model",
+        auto=True,
         max_context_window=1000,
         complexity_min=1,
         complexity_max=10,

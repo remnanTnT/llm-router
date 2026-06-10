@@ -15,6 +15,7 @@ class ServerSelectionContext:
     is_stream: bool
     body: bytes
     origin_model_name: str | None = None
+    auto_model_selection: bool = False
     prefix_cache: float = 0.0
     last_match: int | None = None
 

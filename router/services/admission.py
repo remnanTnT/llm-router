@@ -67,7 +67,7 @@ class AdmissionService:
         if not model and not is_auto:
             return AdmissionResult(True)
         
-        limit_base = model.concurrent_limit if model else int(APP_CONFIG.get("router", {}).get("auto_concurrent_limit", 6))
+        limit_base = model.concurrent_limit if model else int(APP_CONFIG.get("router", {}).get("auto_concurrent_limit", 10))
         if limit_base is None:
             return AdmissionResult(True)
 
