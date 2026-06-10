@@ -223,6 +223,72 @@ def test_auto_route_without_active_target_model_records_router_result():
     )
 
 
+def test_text_only_content_parts_do_not_use_multimodal_bypass(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    Model.objects.create(model_name="vision-model", auto=True, multimodal=True)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    body = json.dumps({
+        "model": "auto",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        ],
+    }).encode("utf-8")
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+
+    model, router_result = ProxyService(chooser=_RoutingChooser())._get_auto_route_model(
+        body,
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model == target_model
+    assert router_result == "complexity:5"
+
+
+def test_chat_image_content_parts_use_multimodal_bypass(monkeypatch):
+    vision_model = Model.objects.create(model_name="vision-model", auto=True, multimodal=True)
+    Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing request should not be sent for image auto requests")
+
+    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+
+    body = json.dumps({
+        "model": "auto",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is in this image?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc123"},
+                    },
+                ],
+            },
+        ],
+    }).encode("utf-8")
+
+    model, router_result = ProxyService(chooser=_RoutingChooser())._get_auto_route_model(
+        body,
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model == vision_model
+    assert router_result == "multimodal_bypass"
+
+
 def test_auto_route_prefix_cache_uses_only_auto_selectable_models(monkeypatch):
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)

@@ -104,11 +104,22 @@ class ProxyService:
         try:
             data = json.loads(body.decode("utf-8"))
             for message in data.get("messages", []):
-                if isinstance(message.get("content"), list):
+                if self._has_chat_image_part(message.get("content")):
                     return True
         except Exception:
             pass
         return False
+
+    @staticmethod
+    def _has_chat_image_part(content: Any) -> bool:
+        if not isinstance(content, list):
+            return False
+        return any(
+            isinstance(part, dict)
+            and part.get("type") == "image_url"
+            and bool(part.get("image_url"))
+            for part in content
+        )
 
     def _check_cache_hit(self, body: bytes, active_models: list[Any], model_names: list[str]) -> Any | None:
         chooser = self.chooser
