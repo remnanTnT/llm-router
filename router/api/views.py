@@ -160,6 +160,16 @@ def models(request):
 
 
 @require_http_methods(["GET"])
+def model_online_list(request):
+    return JsonResponse(
+        {
+            "code": 200,
+            "data": [model.model_name for model in ModelRepository.list_online()],
+        }
+    )
+
+
+@require_http_methods(["GET"])
 def model_info(request):
     model = _model_or_error(request.GET.get("model_name"))
     if isinstance(model, JsonResponse):

@@ -11,6 +11,7 @@ urlpatterns = [
     path("model_request_stats", views.model_request_stats),
     path("all_model_request_stats", views.all_model_request_stats),
     path("models", views.models),
+    path("model_online_list", views.model_online_list),
     path("model_info", views.model_info),
     path("request_time_stats", views.request_time_stats),
     path("model_request_time_stats", views.model_request_time_stats),

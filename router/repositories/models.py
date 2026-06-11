@@ -30,3 +30,8 @@ class ModelRepository:
     @staticmethod
     def get_by_ids(model_ids: Iterable[int]) -> dict[int, Model]:
         return {model.id: model for model in Model.objects.filter(id__in=list(model_ids))}
+
+    @staticmethod
+    def list_online() -> list[Model]:
+        """List all models that are not deprecated (deprecation is null)."""
+        return list(Model.objects.filter(deprecation__isnull=True).order_by("id"))
