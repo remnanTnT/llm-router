@@ -41,7 +41,6 @@ class ModelRepository:
     def list_auto_selectable_models() -> list[Model]:
         return list(
             Model.objects.filter(
-                auto=True,
                 deprecation__isnull=True,
                 complexity_min__isnull=False,
                 complexity_max__isnull=False,
@@ -66,7 +65,10 @@ class ModelRepository:
 
     @staticmethod
     def get_multimodal_model() -> Model | None:
-        return Model.objects.filter(auto=True, multimodal=True, deprecation__isnull=True).first()
+        return Model.objects.filter(
+            multimodal=True,
+            deprecation__isnull=True,
+        ).order_by("id").first()
 
     @staticmethod
     def get_by_names(model_names: list[str]) -> dict[str, Model]:

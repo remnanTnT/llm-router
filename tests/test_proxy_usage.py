@@ -1,5 +1,5 @@
 import json
-from router.services.proxy import ProxyService
+from router.services.proxy_response import parse_json_usage
 
 def test_parse_json_usage_with_cached_tokens():
     content = json.dumps({
@@ -13,7 +13,7 @@ def test_parse_json_usage_with_cached_tokens():
         }
     }).encode("utf-8")
     
-    assert ProxyService._parse_json_usage(content) == (2006, 300, 1920)
+    assert parse_json_usage(content) == (2006, 300, 1920)
 
 def test_parse_json_usage_without_cached_tokens():
     content = json.dumps({
@@ -24,10 +24,10 @@ def test_parse_json_usage_without_cached_tokens():
         }
     }).encode("utf-8")
     
-    assert ProxyService._parse_json_usage(content) == (100, 50, 0)
+    assert parse_json_usage(content) == (100, 50, 0)
 
 def test_parse_json_usage_invalid_json():
-    assert ProxyService._parse_json_usage(b"invalid") == (0, 0, 0)
+    assert parse_json_usage(b"invalid") == (0, 0, 0)
 
 def test_parse_json_usage_missing_usage():
-    assert ProxyService._parse_json_usage(b"{}") == (0, 0, 0)
+    assert parse_json_usage(b"{}") == (0, 0, 0)

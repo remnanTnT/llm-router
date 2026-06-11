@@ -18,6 +18,7 @@ class ServerSelectionContext:
     auto_model_selection: bool = False
     prefix_cache: float = 0.0
     last_match: int | None = None
+    router_result: str | None = None
 
 
 class ServerChooser(Protocol):
