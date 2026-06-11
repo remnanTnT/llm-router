@@ -69,9 +69,11 @@ ALTER TABLE models ADD COLUMN multimodal BOOLEAN NOT NULL DEFAULT FALSE;
 
 `deprecation` is admin-managed. If it is not `NULL`, the router will return a 400 error with the value of this column as the error message, effectively disabling the model.
 
-`auto` is admin-managed. Set it to `TRUE` for models that participate in auto routing. Requests whose model name is `auto` (case-insensitive) select from active `auto = TRUE` models. On the normal port, requests for a concrete model with `auto = TRUE` also use auto routing; on the VIP port, concrete model requests keep the requested model.
+`auto` is admin-managed. It controls auto-routing entrance, not target eligibility. Requests whose model name is `auto` (case-insensitive) enter auto routing. On the normal port, requests for a concrete model with `auto = TRUE` also enter auto routing; on the VIP port, concrete model requests keep the requested model.
 
-`complexity_min` and `complexity_max` are admin-managed auto-routing bounds. For an auto-routed request, the routing model returns a complexity score from 1 to 10, and the router selects the active `auto = TRUE` model whose inclusive range contains that score. If either column is `NULL`, the model is excluded from auto selection. A score must match exactly one model; zero or multiple matching models fall back to the configured default model and record a routing failure reason in `router_result`.
+`complexity_min` and `complexity_max` are admin-managed text auto-routing target bounds. For an auto-routed text request, the routing model returns a complexity score from 1 to 10, and the router selects the active model whose inclusive range contains that score. If either column is `NULL`, the model is excluded from complexity-based auto selection. A score must match exactly one model; zero or multiple matching models fall back to the configured default model and record a routing failure reason in `router_result`.
+
+`multimodal` is admin-managed multimodal auto-routing target eligibility. For an auto-routed image request, the router bypasses text complexity classification and selects an active `multimodal = TRUE` model. Concrete requests for models with `auto = FALSE` keep the requested model, even when the request contains image content.
 
 ## Request-Table Indexes
 

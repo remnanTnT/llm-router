@@ -6,7 +6,9 @@ from django.utils import timezone
 
 from router.config import APP_CONFIG
 from router.models import IP, Model, RequestRecord, Server
+from router.route_algorithm.auto import AutoRouteAlgorithm
 from router.route_algorithm.base import ServerSelectionContext
+from router.services.admission import AdmissionResult
 from router.services.proxy import ProxyService
 
 
@@ -102,9 +104,9 @@ def test_auto_route_request_disables_thinking(monkeypatch):
         response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
         return response
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
 
-    service = ProxyService(chooser=_RoutingChooser())
+    service = AutoRouteAlgorithm(_RoutingChooser())
     context = ServerSelectionContext(
         request_id=123,
         ip_id=None,
@@ -150,7 +152,7 @@ def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
         response.json.return_value = {"choices": [{"message": {"content": '{"complexity":4}'}}]}
         return response
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
 
     request_body = {
         "model": "auto",
@@ -178,7 +180,7 @@ def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
         body=body,
     )
 
-    model, router_result = ProxyService(chooser=_RoutingChooser())._query_routing_llm(
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._query_routing_llm(
         body,
         MagicMock(id=123),
         context,
@@ -210,7 +212,7 @@ def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
 
 
 def test_auto_route_without_active_target_model_records_router_result():
-    service = ProxyService(chooser=_RoutingChooser())
+    service = AutoRouteAlgorithm(_RoutingChooser())
     model, router_result = service._get_auto_route_model(
         b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
         MagicMock(id=123),
@@ -219,8 +221,42 @@ def test_auto_route_without_active_target_model_records_router_result():
 
     assert model is None
     assert router_result == (
-        "routing_failed:missing_target_model:no auto-selectable target model for auto request"
+        "routing_failed:missing_target_model:no auto-routing target model for auto request"
     )
+
+
+def test_auto_route_complexity_can_select_auto_false_target(monkeypatch):
+    low_model = Model.objects.create(
+        model_name="low-model",
+        auto=False,
+        complexity_min=1,
+        complexity_max=3,
+    )
+    Model.objects.create(
+        model_name="high-model",
+        auto=True,
+        complexity_min=7,
+        complexity_max=10,
+    )
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":1}'}}]}
+        return response
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._get_auto_route_model(
+        b'{"model":"auto","messages":[{"role":"user","content":"simple"}]}',
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model == low_model
+    assert router_result == "complexity:1"
 
 
 def test_text_only_content_parts_do_not_use_multimodal_bypass(monkeypatch):
@@ -242,9 +278,9 @@ def test_text_only_content_parts_do_not_use_multimodal_bypass(monkeypatch):
         response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
         return response
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
 
-    model, router_result = ProxyService(chooser=_RoutingChooser())._get_auto_route_model(
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._get_auto_route_model(
         body,
         MagicMock(id=123),
         MagicMock(),
@@ -255,13 +291,13 @@ def test_text_only_content_parts_do_not_use_multimodal_bypass(monkeypatch):
 
 
 def test_chat_image_content_parts_use_multimodal_bypass(monkeypatch):
-    vision_model = Model.objects.create(model_name="vision-model", auto=True, multimodal=True)
+    vision_model = Model.objects.create(model_name="vision-model", auto=False, multimodal=True)
     Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("routing request should not be sent for image auto requests")
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
 
     body = json.dumps({
         "model": "auto",
@@ -279,7 +315,42 @@ def test_chat_image_content_parts_use_multimodal_bypass(monkeypatch):
         ],
     }).encode("utf-8")
 
-    model, router_result = ProxyService(chooser=_RoutingChooser())._get_auto_route_model(
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._get_auto_route_model(
+        body,
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model == vision_model
+    assert router_result == "multimodal_bypass"
+
+
+def test_separate_image_message_uses_multimodal_bypass(monkeypatch):
+    vision_model = Model.objects.create(model_name="vision-model", auto=False, multimodal=True)
+    Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing request should not be sent for image auto requests")
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
+
+    body = json.dumps({
+        "model": "auto",
+        "messages": [
+            {"role": "user", "content": "@snapshot.png 这图片里讲了什么？"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,"},
+                    },
+                ],
+            },
+        ],
+    }).encode("utf-8")
+
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._get_auto_route_model(
         body,
         MagicMock(id=123),
         MagicMock(),
@@ -292,14 +363,14 @@ def test_chat_image_content_parts_use_multimodal_bypass(monkeypatch):
 def test_auto_route_prefix_cache_uses_only_auto_selectable_models(monkeypatch):
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
-    ignored_model = Model.objects.create(model_name="ignored-model", complexity_min=1, complexity_max=10)
+    ignored_model = Model.objects.create(model_name="ignored-model")
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("routing request should not be sent on prefix-cache hit")
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
 
-    service = ProxyService(chooser=_PrefixCacheChooser({"router-model": 0.99, "target-model": 0.95}))
+    service = AutoRouteAlgorithm(_PrefixCacheChooser({"router-model": 0.99, "target-model": 0.95}))
     model, router_result = service._get_auto_route_model(
         b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
         MagicMock(id=123),
@@ -307,8 +378,33 @@ def test_auto_route_prefix_cache_uses_only_auto_selectable_models(monkeypatch):
     )
 
     assert model == target_model
-    assert ignored_model.auto is False
+    assert ignored_model.complexity_min is None
     assert routing_model.complexity_min is None
+    assert router_result == "cache_hit"
+
+
+def test_auto_route_prefix_cache_can_select_auto_false_target(monkeypatch):
+    Model.objects.create(model_name="high-model", auto=True, complexity_min=7, complexity_max=10)
+    low_model = Model.objects.create(
+        model_name="low-model",
+        auto=False,
+        complexity_min=1,
+        complexity_max=3,
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing request should not be sent on prefix-cache hit")
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
+
+    service = AutoRouteAlgorithm(_PrefixCacheChooser({"low-model": 0.95, "high-model": 0.5}))
+    model, router_result = service._get_auto_route_model(
+        b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model == low_model
     assert router_result == "cache_hit"
 
 
@@ -317,7 +413,7 @@ def test_case_insensitive_auto_request_selects_target_model(monkeypatch):
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
-    monkeypatch.setattr("router.services.proxy.ProxyService.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
 
     def fake_post(url, json, headers, timeout):
         response = MagicMock()
@@ -336,7 +432,7 @@ def test_case_insensitive_auto_request_selects_target_model(monkeypatch):
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -361,7 +457,7 @@ def test_model_auto_flag_triggers_auto_selection_on_normal_channel(monkeypatch):
     Server.objects.create(model_id=source_model.id, base_url="http://source.example", is_online=True)
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
-    monkeypatch.setattr("router.services.proxy.ProxyService.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
 
     def fake_post(url, json, headers, timeout):
         response = MagicMock()
@@ -380,7 +476,7 @@ def test_model_auto_flag_triggers_auto_selection_on_normal_channel(monkeypatch):
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -396,6 +492,170 @@ def test_model_auto_flag_triggers_auto_selection_on_normal_channel(monkeypatch):
     record = RequestRecord.objects.get()
     assert record.model_id == target_model.id
     assert record.router_result == "complexity:4"
+
+
+def test_auto_entrance_concurrency_uses_requested_model_then_routes_by_complexity(monkeypatch):
+    source_model = Model.objects.create(model_name="source-model", auto=True, concurrent_limit=2)
+    target_model = Model.objects.create(
+        model_name="low-model",
+        auto=False,
+        complexity_min=1,
+        complexity_max=3,
+    )
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=source_model.id, base_url="http://source.example", is_online=True)
+    Server.objects.create(model_id=target_model.id, base_url="http://low.example", is_online=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+
+    concurrency_calls = []
+
+    def fake_check_concurrency(self, ip, model, is_auto=False):
+        concurrency_calls.append((model, is_auto))
+        return AdmissionResult(True)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":1}'}}]}
+        return response
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://low.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "low-model"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr(
+        "router.services.admission.AdmissionService.check_concurrency",
+        fake_check_concurrency,
+    )
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "source-model", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert concurrency_calls == [(source_model, True)]
+    record = RequestRecord.objects.get()
+    assert record.model_id == target_model.id
+    assert record.router_result == "complexity:1"
+
+
+def test_auto_entrance_multimodal_request_selects_auto_false_multimodal_model(monkeypatch):
+    source_model = Model.objects.create(model_name="source-model", auto=True)
+    vision_model = Model.objects.create(model_name="vision-model", auto=False, multimodal=True)
+    Server.objects.create(model_id=source_model.id, base_url="http://source.example", is_online=True)
+    Server.objects.create(model_id=vision_model.id, base_url="http://vision.example", is_online=True)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing request should not be sent for image auto requests")
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://vision.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "vision-model"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({
+            "model": "source-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is in this image?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc123"},
+                        },
+                    ],
+                },
+            ],
+        }),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == vision_model.id
+    assert record.router_result == "multimodal_bypass"
+
+
+def test_auto_false_concrete_model_request_keeps_requested_model_for_multimodal(monkeypatch):
+    vision_model = Model.objects.create(model_name="vision-model", auto=False, multimodal=True)
+    Server.objects.create(model_id=vision_model.id, base_url="http://vision.example", is_online=True)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("routing request should not be sent for non-auto concrete model requests")
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://vision.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "vision-model"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({
+            "model": "vision-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is in this image?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc123"},
+                        },
+                    ],
+                },
+            ],
+        }),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = RequestRecord.objects.get()
+    assert record.model_id == vision_model.id
+    assert record.router_result is None
 
 
 def test_model_auto_flag_keeps_original_model_on_vip_channel(monkeypatch):
@@ -422,7 +682,7 @@ def test_model_auto_flag_keeps_original_model_on_vip_channel(monkeypatch):
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -455,7 +715,7 @@ def test_auto_route_multiple_matching_complexity_ranges_use_fallback(monkeypatch
         response.json.return_value = {"choices": [{"message": {"content": '{"complexity":7}'}}]}
         return response
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
 
     context = ServerSelectionContext(
         request_id=123,
@@ -467,7 +727,7 @@ def test_auto_route_multiple_matching_complexity_ranges_use_fallback(monkeypatch
         is_stream=False,
         body=b'{"model":"auto","messages":[{"role":"user","content":"hard task"}]}',
     )
-    model, router_result = ProxyService(chooser=_RoutingChooser())._query_routing_llm(
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._query_routing_llm(
         context.body,
         MagicMock(id=123),
         context,
@@ -478,7 +738,7 @@ def test_auto_route_multiple_matching_complexity_ranges_use_fallback(monkeypatch
     assert model == fallback_model
     assert router_result == (
         "routing_failed:multiple_models_for_complexity:"
-        "complexity 7 matched multiple auto-selectable models: broad-model,narrow-model"
+        "complexity 7 matched multiple auto-routing target models: broad-model,narrow-model"
     )
 
 
@@ -494,7 +754,7 @@ def test_auto_route_without_matching_complexity_uses_fallback(monkeypatch):
         response.json.return_value = {"choices": [{"message": {"content": '{"complexity":8}'}}]}
         return response
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
 
     context = ServerSelectionContext(
         request_id=123,
@@ -506,7 +766,7 @@ def test_auto_route_without_matching_complexity_uses_fallback(monkeypatch):
         is_stream=False,
         body=b'{"model":"auto","messages":[{"role":"user","content":"hard task"}]}',
     )
-    model, router_result = ProxyService(chooser=_RoutingChooser())._query_routing_llm(
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._query_routing_llm(
         context.body,
         MagicMock(id=123),
         context,
@@ -516,7 +776,7 @@ def test_auto_route_without_matching_complexity_uses_fallback(monkeypatch):
 
     assert model == fallback_model
     assert router_result == (
-        "routing_failed:no_model_for_complexity:complexity 8 has no matching auto-selectable model"
+        "routing_failed:no_model_for_complexity:complexity 8 has no matching auto-routing target model"
     )
 
 
@@ -532,7 +792,7 @@ def test_auto_route_invalid_complexity_uses_fallback(monkeypatch):
         response.json.return_value = {"choices": [{"message": {"content": "target-model"}}]}
         return response
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fake_post)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
 
     context = ServerSelectionContext(
         request_id=123,
@@ -544,7 +804,7 @@ def test_auto_route_invalid_complexity_uses_fallback(monkeypatch):
         is_stream=False,
         body=b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
     )
-    model, router_result = ProxyService(chooser=_RoutingChooser())._query_routing_llm(
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._query_routing_llm(
         context.body,
         MagicMock(id=123),
         context,
@@ -559,10 +819,10 @@ def test_auto_route_invalid_complexity_uses_fallback(monkeypatch):
 
 
 def test_routing_complexity_extracts_numbers_from_imperfect_responses():
-    assert ProxyService._routing_complexity('```json\n{"complexity":8}\n```') == 8
-    assert ProxyService._routing_complexity('The request complexity is 6.') == 6
-    assert ProxyService._routing_complexity('{"complexity": 9,}') == 9
-    assert ProxyService._routing_complexity('{"complexity":7.5}') is None
+    assert AutoRouteAlgorithm._routing_complexity('```json\n{"complexity":8}\n```') == 8
+    assert AutoRouteAlgorithm._routing_complexity('The request complexity is 6.') == 6
+    assert AutoRouteAlgorithm._routing_complexity('{"complexity": 9,}') == 9
+    assert AutoRouteAlgorithm._routing_complexity('{"complexity":7.5}') is None
 
 
 def test_small_auto_request_uses_routing_model_before_complexity(monkeypatch):
@@ -586,8 +846,8 @@ def test_small_auto_request_uses_routing_model_before_complexity(monkeypatch):
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -624,8 +884,8 @@ def test_auto_route_without_routing_model_uses_fallback_and_records_router_resul
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -666,8 +926,8 @@ def test_small_auto_request_uses_routing_model_directly(monkeypatch):
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -687,9 +947,9 @@ def test_small_auto_request_uses_routing_model_directly(monkeypatch):
 
 
 def test_update_body_model_can_disable_thinking():
-    service = ProxyService(chooser=_RoutingChooser())
+    service = AutoRouteAlgorithm(_RoutingChooser())
 
-    body = service._update_body_model(
+    body = service.update_body_model(
         b'{"model":"auto","stream":true,"chat_template_kwargs":{"tokenize":false}}',
         "target-model",
         disable_thinking=True,
@@ -770,7 +1030,7 @@ def test_three_thousand_token_non_auto_request_skips_unneeded_routing(monkeypatc
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -823,7 +1083,7 @@ def test_non_auto_request_does_not_call_routing_llm_and_keeps_user_model(monkeyp
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -876,7 +1136,7 @@ def test_small_auto_request_records_small_request_latency(monkeypatch):
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -931,8 +1191,8 @@ def test_small_auto_request_routes_directly_to_routing_server(monkeypatch):
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -970,8 +1230,8 @@ def test_auto_route_without_routing_server_uses_fallback_and_records_router_resu
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
@@ -1012,8 +1272,8 @@ def test_small_auto_request_succeeds_with_routing_server(monkeypatch):
         upstream.headers = {}
         return upstream
 
-    monkeypatch.setattr("router.services.proxy.ProxyService._check_cache_hit", lambda *args: None)
-    monkeypatch.setattr("router.services.proxy.requests.post", fail_if_called)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm._check_cache_hit", lambda *args: None)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fail_if_called)
     monkeypatch.setattr(
         "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
         fake_request,
