@@ -29,6 +29,8 @@ class ContextOverflowDecision:
 
 class AutoRouteAlgorithm:
     SMALL_REQUEST_ROUTING_TOKEN_LIMIT = 3000
+    PREFIX_CACHE_AUTO_HIT_THRESHOLD = 0.7
+    ROUTING_USER_PROMPT_CHAR_LIMIT = 500
 
     def __init__(self, chooser=None):
         self.chooser = chooser
@@ -59,6 +61,7 @@ class AutoRouteAlgorithm:
         model,
         is_vip_channel: bool,
     ) -> AutoRouteDecision:
+        origin_model_name = context.origin_model_name or parsed.model_name
         model, router_result = self._resolve_small_request_routing_model(
             parsed,
             record,
@@ -74,8 +77,20 @@ class AutoRouteAlgorithm:
                 model,
                 context.auto_model_selection,
             )
-        context.router_result = router_result
-        return AutoRouteDecision(model=model, router_result=router_result)
+        context.router_result = self._router_result_with_origin(
+            origin_model_name,
+            router_result,
+        )
+        return AutoRouteDecision(model=model, router_result=context.router_result)
+
+    @staticmethod
+    def _router_result_with_origin(
+        origin_model_name: str | None,
+        router_result: str | None,
+    ) -> str | None:
+        if not router_result or not origin_model_name:
+            return router_result
+        return f"{origin_model_name}:{router_result}"[:300]
 
     def _resolve_auto_model(
         self,
@@ -216,21 +231,40 @@ class AutoRouteAlgorithm:
         active_models: list[Any],
         model_names: list[str],
     ) -> Any | None:
+        if self._user_prompt_count_from_body(body) == 1:
+            return None
+
         chooser = self.chooser
         if hasattr(chooser, "get_all_model_prefix_ratios"):
             ratios = chooser.get_all_model_prefix_ratios(body, model_names)
             if ratios:
-                best_name = max(ratios, key=ratios.get)
-                if ratios[best_name] > 0.7:
-                    return next(
-                        (
-                            model
-                            for model in active_models
-                            if model.model_name == best_name
-                        ),
-                        None,
-                    )
+                cache_hits = []
+                for model in active_models:
+                    ratio = float(ratios.get(model.model_name) or 0.0)
+                    if ratio > self.PREFIX_CACHE_AUTO_HIT_THRESHOLD:
+                        cache_hits.append(model)
+                if len(cache_hits) == 1:
+                    return cache_hits[0]
         return None
+
+    @staticmethod
+    def _user_prompt_count_from_body(body: bytes) -> int:
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return 0
+        if not isinstance(data, dict):
+            return 0
+
+        source_messages = data.get("messages")
+        if not isinstance(source_messages, list):
+            return 0
+
+        return sum(
+            1
+            for message in source_messages
+            if isinstance(message, dict) and message.get("role") == "user"
+        )
 
     def _query_routing_llm(
         self,
@@ -540,6 +574,7 @@ class AutoRouteAlgorithm:
 
         for index, content in enumerate(last_three):
             ordinal = ordinals[index] if index < len(ordinals) else f"{index + 1}th"
+            content = AutoRouteAlgorithm._truncate_routing_user_prompt(content)
             formatted_messages.append(
                 {
                     "role": "user",
@@ -547,6 +582,12 @@ class AutoRouteAlgorithm:
                 }
             )
         return formatted_messages
+
+    @classmethod
+    def _truncate_routing_user_prompt(cls, content: str) -> str:
+        if len(content) <= cls.ROUTING_USER_PROMPT_CHAR_LIMIT:
+            return content
+        return content[: cls.ROUTING_USER_PROMPT_CHAR_LIMIT] + "..."
 
     def _get_default_model(self) -> Any:
         return ModelRepository.get_by_name(self.fallback_model_name())
