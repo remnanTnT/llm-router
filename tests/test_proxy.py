@@ -1236,6 +1236,49 @@ def test_routing_complexity_extracts_numbers_from_imperfect_responses():
     assert AutoRouteAlgorithm._routing_complexity('{"complexity":7.5}') is None
 
 
+def test_routing_payload_requests_structured_output(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    sent = {}
+
+    def fake_post(url, json, headers, timeout):
+        sent["payload"] = json
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+
+    context = ServerSelectionContext(
+        request_id=123,
+        ip_id=None,
+        model_id=None,
+        model_name="auto",
+        path="chat/completions",
+        method="POST",
+        is_stream=False,
+        body=b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+    )
+    AutoRouteAlgorithm(_RoutingChooser())._query_routing_llm(
+        context.body,
+        MagicMock(id=123),
+        context,
+        [target_model],
+        [target_model.model_name],
+    )
+
+    response_format = sent["payload"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    assert schema["properties"]["complexity"] == {"type": "integer", "minimum": 1, "maximum": 10}
+    assert schema["required"] == ["complexity"]
+    assert schema["additionalProperties"] is False
+
+
 def test_small_auto_request_uses_routing_model_before_complexity(monkeypatch):
     target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)

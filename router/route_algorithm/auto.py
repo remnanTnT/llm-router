@@ -590,9 +590,32 @@ class AutoRouteAlgorithm:
             "model": model_name,
             "messages": self._routing_messages_from_body(body),
             "stream": False,
+            "response_format": self._routing_response_format(),
         }
         self.disable_thinking(payload)
         return payload
+
+    @staticmethod
+    def _routing_response_format() -> dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "routing_complexity",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "complexity": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                        }
+                    },
+                    "required": ["complexity"],
+                    "additionalProperties": False,
+                },
+            },
+        }
 
     def _routing_messages_from_body(self, body: bytes) -> list[dict[str, Any]]:
         messages = [{"role": "system", "content": self._router_system_prompt}]
