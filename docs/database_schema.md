@@ -92,6 +92,11 @@ ALTER TABLE requests ADD COLUMN last_match BIGINT NULL;
 ALTER TABLE requests ADD COLUMN model_choosing_latency BIGINT NULL;
 ```
 
+Internal routing-model calls used to choose an auto-routed target are also recorded in
+`requests`. These rows use `ip_id = 0`, `is_stream = FALSE`, and the routing model's
+`model_id`; the original client request row remains separate and its `latency` still
+measures the full end-to-end request.
+
 ## Schema Validation
 
 Use the management commands to validate schema state without altering tables:

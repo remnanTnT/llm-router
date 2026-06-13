@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import random
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +9,7 @@ import requests
 
 from router.config import APP_CONFIG
 from router.repositories.models import ModelRepository
+from router.repositories.requests import RequestRepository
 from router.repositories.servers import ServerRepository
 from router.route_algorithm.base import ServerSelectionContext
 from router.services import proxy_logging, proxy_response
@@ -333,56 +333,117 @@ class AutoRouteAlgorithm:
         if len(payload.get("messages", [])) <= 1:
             return None, "no_user_query"
 
+        choosing_record = self._create_routing_request_record(server)
         url = self._build_url(server.base_url, "chat/completions", "")
         headers = {"Content-Type": "application/json"}
         csb_token = getattr(server, "csb_token", None)
         if csb_token:
             headers["csb-token"] = csb_token
 
+        ServerRepository.increment_workload(server)
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=10)
-        except Exception as exc:
-            router_result = self._routing_exception_result(exc)
-            proxy_logging.safe_append_request_log(
-                record.id,
-                f"Routing LLM error: {str(exc)}",
-            )
-            return None, router_result
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            except Exception as exc:
+                self._finish_routing_request_record(
+                    choosing_record,
+                    502,
+                    str(exc),
+                    server,
+                )
+                router_result = self._routing_exception_result(exc)
+                proxy_logging.safe_append_request_log(
+                    record.id,
+                    f"Routing LLM error: {str(exc)}",
+                )
+                return None, router_result
 
-        if resp.status_code != 200:
-            return None, self._routing_response_error_result(resp)
+            if resp.status_code != 200:
+                self._finish_routing_response_record(choosing_record, resp, server)
+                return None, self._routing_response_error_result(resp)
 
-        try:
-            result = (
-                resp.json()
-                .get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-        except Exception as exc:
-            router_result = self._routing_exception_result(
-                exc,
-                status_code=resp.status_code,
-            )
-            proxy_logging.safe_append_request_log(
-                record.id,
-                f"Routing LLM error: {str(exc)}",
-            )
-            return None, router_result
+            try:
+                self._finish_routing_response_record(choosing_record, resp, server)
+                result = (
+                    resp.json()
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                    .strip()
+                )
+            except Exception as exc:
+                router_result = self._routing_exception_result(
+                    exc,
+                    status_code=resp.status_code,
+                )
+                proxy_logging.safe_append_request_log(
+                    record.id,
+                    f"Routing LLM error: {str(exc)}",
+                )
+                return None, router_result
 
-        complexity = self._routing_complexity(result)
-        if complexity is None:
-            return None, self._invalid_routing_result(result)
+            complexity = self._routing_complexity(result)
+            if complexity is None:
+                return None, self._invalid_routing_result(result)
 
-        return complexity, self._complexity_routing_result(complexity)
+            return complexity, self._complexity_routing_result(complexity)
+        finally:
+            ServerRepository.decrement_workload(server)
+
+    @staticmethod
+    def _create_routing_request_record(server) -> Any:
+        return RequestRepository.create_llm_choosing(
+            model_id=server.model_id or 0,
+            target_pod_ip=getattr(server, "base_url", None),
+        )
+
+    @staticmethod
+    def _finish_routing_response_record(record, response, server) -> None:
+        content = proxy_response.response_content_bytes(response)
+        reason = proxy_response.response_reason(response)
+        status_code = int(getattr(response, "status_code", 502) or 502)
+        fail_reason = proxy_response.extract_fail_reason(
+            content,
+            reason or "routing request failed",
+        )
+        input_tokens, output_tokens, cached_tokens = proxy_response.parse_json_usage(
+            content
+        )
+        RequestRepository.finish(
+            record,
+            status_code,
+            fail_reason,
+            input_tokens,
+            output_tokens,
+            getattr(server, "base_url", None),
+            getattr(server, "model_id", None),
+            attempt_count=1,
+            final_prefix_cache=cached_tokens,
+        )
+
+    @staticmethod
+    def _finish_routing_request_record(
+        record,
+        status_code: int,
+        reason: str,
+        server,
+        task_status: str | None = None,
+    ) -> None:
+        RequestRepository.finish(
+            record,
+            status_code,
+            reason,
+            target_pod_ip=getattr(server, "base_url", None),
+            model_id=getattr(server, "model_id", None),
+            task_status=task_status,
+            attempt_count=1,
+        )
 
     def _choose_routing_server(self, routing_servers: list[Any], context):
-        if self.chooser:
-            return self.chooser.choose(routing_servers, context, set()) or random.choice(
-                routing_servers
-            )
-        return random.choice(routing_servers)
+        return min(
+            routing_servers,
+            key=lambda server: (server.workload or 0, server.id),
+        )
 
     def _routing_response_error_result(self, response) -> str:
         status_code = getattr(response, "status_code", None)

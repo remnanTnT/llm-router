@@ -31,6 +31,7 @@ def test_request_stats_counts_distinct_ips():
     _request(model, "2026-01-01 00:10:00", ip_id=1)
     _request(model, "2026-01-01 00:20:00", ip_id=1)
     _request(model, "2026-01-01 00:30:00", ip_id=2)
+    _request(model, "2026-01-01 00:40:00", ip_id=0)
 
     response = client.get("/api/request_stats", {"start_time": "2026-01-01 00:00:00", "end_time": "2026-01-01 01:00:00"})
 
@@ -123,6 +124,7 @@ def test_period_counts_fill_missing_buckets_and_count_distinct_ips():
     model = Model.objects.create(model_name="model-a", concurrent_limit=3)
     _request(model, "2026-01-01 00:10:00", ip_id=1)
     _request(model, "2026-01-01 00:20:00", ip_id=1)
+    _request(model, "2026-01-01 00:30:00", ip_id=0)
     _request(model, "2026-01-01 02:10:00", ip_id=2)
 
     count_response = client.get(
