@@ -9,6 +9,10 @@ from django.utils import timezone
 from router.models import RequestRecord
 
 
+LLM_CHOOSING_IP_ID = 0
+LLM_CHOOSING_USER_AGENT = "llm-choosing"
+
+
 _EXTRA_STATUS_PHRASES = {
     499: "Client Closed Request",
 }
@@ -23,6 +27,10 @@ def _status_text(code: int) -> str:
 
 
 class RequestRepository:
+    @staticmethod
+    def external_requests():
+        return RequestRecord.objects.exclude(ip_id=LLM_CHOOSING_IP_ID)
+
     @staticmethod
     def create_processing(
         ip_id: int | None,
@@ -47,6 +55,29 @@ class RequestRepository:
             final_prefix_cache=0,
             last_match=None,
             estimate_tokens=estimate_tokens,
+        )
+
+    @staticmethod
+    def create_llm_choosing(
+        model_id: int,
+        target_pod_ip: str | None,
+    ) -> RequestRecord:
+        return RequestRecord.objects.create(
+            user_ip_id=1,
+            ip_id=LLM_CHOOSING_IP_ID,
+            send_time=timezone.now(),
+            model_id=model_id,
+            task_status="processing",
+            is_stream=False,
+            user_agent=LLM_CHOOSING_USER_AGENT,
+            input_token_cnt=0,
+            output_token_cnt=0,
+            target_pod_ip=target_pod_ip[:500] if target_pod_ip else None,
+            attempt_count=1,
+            prefix_cache=0.0,
+            final_prefix_cache=0,
+            last_match=None,
+            estimate_tokens=0,
         )
 
     @staticmethod
@@ -216,15 +247,30 @@ class RequestRepository:
 
     @staticmethod
     def count_distinct_ips(start: datetime, end: datetime) -> int:
-        return RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, ip_id__isnull=False).values("ip_id").distinct().count()
+        return (
+            RequestRepository.external_requests()
+            .filter(send_time__gte=start, send_time__lte=end, ip_id__isnull=False)
+            .values("ip_id")
+            .distinct()
+            .count()
+        )
 
     @staticmethod
     def count_success_requests(start: datetime, end: datetime) -> int:
-        return RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success").count()
+        return RequestRepository.external_requests().filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success",
+        ).count()
 
     @staticmethod
     def count_success_requests_by_model(start: datetime, end: datetime, model_id: int) -> int:
-        return RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success", model_id=model_id).count()
+        return RequestRepository.external_requests().filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success",
+            model_id=model_id,
+        ).count()
 
     @staticmethod
     def count_success_requests_grouped_by_model(start: datetime, end: datetime, model_ids: list[int]) -> dict[int, int]:
@@ -232,14 +278,25 @@ class RequestRepository:
             return {}
         return {
             row["model_id"]: row["count"]
-            for row in RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success", model_id__in=model_ids)
+            for row in RequestRepository.external_requests()
+            .filter(
+                send_time__gte=start,
+                send_time__lte=end,
+                task_status="success",
+                model_id__in=model_ids,
+            )
             .values("model_id")
             .annotate(count=models.Count("id"))
         }
 
     @staticmethod
     def average_latency_by_bucket(start: datetime, end: datetime, bucket_expr, model_id: int | None = None) -> dict:
-        qs = RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success", latency__isnull=False)
+        qs = RequestRepository.external_requests().filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success",
+            latency__isnull=False,
+        )
         if model_id is not None:
             qs = qs.filter(model_id=model_id)
         return {
@@ -251,7 +308,13 @@ class RequestRepository:
     def count_success_by_bucket(start: datetime, end: datetime, model_id: int, bucket_expr) -> dict:
         return {
             row["bucket"]: row["count"]
-            for row in RequestRecord.objects.filter(send_time__gte=start, send_time__lte=end, task_status="success", model_id=model_id)
+            for row in RequestRepository.external_requests()
+            .filter(
+                send_time__gte=start,
+                send_time__lte=end,
+                task_status="success",
+                model_id=model_id,
+            )
             .annotate(bucket=bucket_expr)
             .values("bucket")
             .annotate(count=models.Count("id"))
@@ -262,7 +325,7 @@ class RequestRepository:
     def count_distinct_ips_by_bucket(start: datetime, end: datetime, model_id: int, bucket_expr) -> dict:
         return {
             row["bucket"]: row["count"]
-            for row in RequestRecord.objects.filter(
+            for row in RequestRepository.external_requests().filter(
                 send_time__gte=start,
                 send_time__lte=end,
                 task_status="success",
@@ -280,7 +343,7 @@ class RequestRepository:
         if not model_ids:
             return []
         return list(
-            RequestRecord.objects.filter(
+            RequestRepository.external_requests().filter(
                 send_time__gte=start,
                 send_time__lte=end,
                 task_status="success",
@@ -298,7 +361,7 @@ class RequestRepository:
             end: End datetime
             model_id: Optional model ID to filter by. If None, returns sum for all models.
         """
-        qs = RequestRecord.objects.filter(
+        qs = RequestRepository.external_requests().filter(
             send_time__gte=start,
             send_time__lte=end,
             task_status="success"
@@ -319,7 +382,7 @@ class RequestRepository:
             end: End datetime
             model_id: Optional model ID to filter by. If None, returns sum for all models.
         """
-        qs = RequestRecord.objects.filter(
+        qs = RequestRepository.external_requests().filter(
             send_time__gte=start,
             send_time__lte=end,
             task_status="success"

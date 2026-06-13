@@ -1,4 +1,8 @@
-from router.repositories.requests import RequestRepository
+from router.repositories.requests import (
+    LLM_CHOOSING_IP_ID,
+    LLM_CHOOSING_USER_AGENT,
+    RequestRepository,
+)
 
 
 def test_record_attempt_persists_prefix_cache_and_last_match():
@@ -46,6 +50,21 @@ def test_record_attempt_clears_last_match_when_no_match():
     record.refresh_from_db()
 
     assert record.last_match is None
+
+
+def test_create_llm_choosing_uses_internal_ip_and_processing_status():
+    record = RequestRepository.create_llm_choosing(
+        model_id=7,
+        target_pod_ip="http://router.example",
+    )
+
+    assert record.ip_id == LLM_CHOOSING_IP_ID
+    assert record.user_agent == LLM_CHOOSING_USER_AGENT
+    assert record.model_id == 7
+    assert record.target_pod_ip == "http://router.example"
+    assert record.attempt_count == 1
+    assert record.task_status == "processing"
+    assert record.is_stream is False
 
 
 def test_record_model_choosing_latency_persists_milliseconds():

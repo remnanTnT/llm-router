@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from unittest.mock import MagicMock
 
 from django.test import Client
@@ -8,6 +9,7 @@ from router.config import APP_CONFIG
 from router.models import IP, Model, RequestRecord, Server
 from router.route_algorithm.auto import AutoRouteAlgorithm
 from router.route_algorithm.base import ServerSelectionContext
+from router.repositories.requests import LLM_CHOOSING_IP_ID
 from router.services.admission import AdmissionResult
 from router.services.proxy import ProxyService
 
@@ -92,6 +94,19 @@ class _FailingPrefixCacheChooser(_RoutingChooser):
         raise AssertionError("prefix-cache ratios should not be checked")
 
 
+class _FailingRoutingChooser:
+    def choose(self, candidates, context, attempted):
+        raise AssertionError("routing LLM server selection should use workload directly")
+
+
+def _external_request_record():
+    return RequestRecord.objects.exclude(ip_id=LLM_CHOOSING_IP_ID).get()
+
+
+def _llm_choosing_record():
+    return RequestRecord.objects.get(ip_id=LLM_CHOOSING_IP_ID)
+
+
 def test_auto_route_request_disables_thinking(monkeypatch):
     target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
@@ -141,6 +156,162 @@ def test_auto_route_request_disables_thinking(monkeypatch):
         "content": "Here is the user's 1st message:\n```\nhello\n```\n",
     }
     assert sent["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_auto_route_records_llm_choosing_request_row(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.reason = "OK"
+        response.content = (
+            b'{"choices":[{"message":{"content":"{\\"complexity\\":5}"}}],'
+            b'"usage":{"prompt_tokens":11,"completion_tokens":3,'
+            b'"prompt_tokens_details":{"cached_tokens":2}}}'
+        )
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+
+    context = ServerSelectionContext(
+        request_id=123,
+        ip_id=None,
+        model_id=None,
+        model_name="auto",
+        path="chat/completions",
+        method="POST",
+        is_stream=False,
+        body=b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+    )
+
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._query_routing_llm(
+        context.body,
+        MagicMock(id=123),
+        context,
+        [target_model],
+        [target_model.model_name],
+    )
+
+    assert model == target_model
+    assert router_result == "complexity:5"
+    record = _llm_choosing_record()
+    assert record.ip_id == LLM_CHOOSING_IP_ID
+    assert record.model_id == routing_model.id
+    assert record.target_pod_ip == "http://router.example"
+    assert record.attempt_count == 1
+    assert record.status == "200 OK"
+    assert record.task_status == "success"
+    assert record.input_token_cnt == 11
+    assert record.output_token_cnt == 3
+    assert record.final_prefix_cache == 2
+    assert record.latency is not None
+
+
+def test_auto_route_choosing_request_uses_least_workload_server(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    busy = Server.objects.create(
+        model_id=routing_model.id,
+        base_url="http://busy-router.example",
+        is_online=True,
+        workload=4,
+    )
+    idle = Server.objects.create(
+        model_id=routing_model.id,
+        base_url="http://idle-router.example",
+        is_online=True,
+        workload=1,
+    )
+
+    def fake_post(url, json, headers, timeout):
+        assert url == "http://idle-router.example/chat/completions"
+        busy.refresh_from_db()
+        idle.refresh_from_db()
+        assert busy.workload == 4
+        assert idle.workload == 2
+        response = MagicMock()
+        response.status_code = 200
+        response.reason = "OK"
+        response.content = b'{"choices":[{"message":{"content":"{\\"complexity\\":5}"}}]}'
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+    context = ServerSelectionContext(
+        request_id=123,
+        ip_id=None,
+        model_id=None,
+        model_name="auto",
+        path="chat/completions",
+        method="POST",
+        is_stream=False,
+        body=b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+    )
+
+    model, router_result = AutoRouteAlgorithm(_FailingRoutingChooser())._query_routing_llm(
+        context.body,
+        MagicMock(id=123),
+        context,
+        [target_model],
+        [target_model.model_name],
+    )
+
+    assert model == target_model
+    assert router_result == "complexity:5"
+    busy.refresh_from_db()
+    idle.refresh_from_db()
+    assert busy.workload == 4
+    assert idle.workload == 1
+    assert _llm_choosing_record().target_pod_ip == "http://idle-router.example"
+
+
+def test_auto_route_choosing_request_decrements_workload_after_exception(monkeypatch):
+    fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    server = Server.objects.create(
+        model_id=routing_model.id,
+        base_url="http://router.example",
+        is_online=True,
+        workload=3,
+    )
+
+    def fake_post(url, json, headers, timeout):
+        server.refresh_from_db()
+        assert server.workload == 4
+        raise RuntimeError("routing down")
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+    context = ServerSelectionContext(
+        request_id=123,
+        ip_id=None,
+        model_id=None,
+        model_name="auto",
+        path="chat/completions",
+        method="POST",
+        is_stream=False,
+        body=b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+    )
+
+    model, router_result = AutoRouteAlgorithm(_FailingRoutingChooser())._query_routing_llm(
+        context.body,
+        MagicMock(id=123),
+        context,
+        [target_model],
+        [target_model.model_name],
+    )
+
+    assert model == fallback_model
+    assert router_result == "routing_error:exception:routing down"
+    server.refresh_from_db()
+    assert server.workload == 3
+    record = _llm_choosing_record()
+    assert record.task_status == "failed"
+    assert record.status == "502 Bad Gateway"
 
 
 def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
@@ -545,7 +716,7 @@ def test_case_insensitive_auto_request_selects_target_model(monkeypatch):
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == target_model.id
     assert record.router_result == "AUTO:complexity:5"
 
@@ -589,9 +760,88 @@ def test_model_auto_flag_triggers_auto_selection_on_normal_channel(monkeypatch):
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == target_model.id
     assert record.router_result == "source-model:complexity:4"
+
+
+def test_original_request_latency_remains_end_to_end_when_llm_choosing_is_logged(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+
+    base_time = timezone.now()
+    request_times = [
+        base_time,
+        base_time + timedelta(milliseconds=100),
+        base_time + timedelta(milliseconds=250),
+        base_time + timedelta(milliseconds=400),
+        base_time + timedelta(milliseconds=700),
+    ]
+
+    def fake_now():
+        if request_times:
+            return request_times.pop(0)
+        return base_time + timedelta(milliseconds=700)
+
+    def fake_post(url, json, headers, timeout):
+        assert url == "http://router.example/chat/completions"
+        response = MagicMock()
+        response.status_code = 200
+        response.reason = "OK"
+        response.content = b'{"choices":[{"message":{"content":"{\\"complexity\\":5}"}}]}'
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://target.example/chat/completions"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.repositories.requests.timezone.now", fake_now)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    body = b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}'
+    django_request = MagicMock()
+    django_request.method = "POST"
+    django_request.headers = {}
+    django_request.META = {"QUERY_STRING": ""}
+    django_request.client_disconnect_tracker = None
+    django_request.body = body
+    parsed = MagicMock(
+        stream=False,
+        body=body,
+        model_name="auto",
+        estimated_full_body_tokens=3000,
+    )
+
+    response = ProxyService(chooser=_RoutingChooser()).forward(
+        django_request,
+        "chat/completions",
+        parsed,
+        1,
+        None,
+        None,
+    )
+
+    assert response.status_code == 200
+    original = _external_request_record()
+    choosing = _llm_choosing_record()
+    assert original.model_id == target_model.id
+    assert original.latency == 700
+    assert original.router_result == "auto:complexity:5"
+    assert choosing.model_id == routing_model.id
+    assert choosing.latency == 150
 
 
 def test_auto_entrance_concurrency_uses_requested_model_then_routes_by_complexity(monkeypatch):
@@ -649,7 +899,7 @@ def test_auto_entrance_concurrency_uses_requested_model_then_routes_by_complexit
 
     assert response.status_code == 200
     assert concurrency_calls == [(source_model, True)]
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == target_model.id
     assert record.router_result == "source-model:complexity:1"
 
@@ -702,7 +952,7 @@ def test_auto_entrance_multimodal_request_selects_auto_false_multimodal_model(mo
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == vision_model.id
     assert record.router_result == "source-model:multimodal_bypass"
 
@@ -753,7 +1003,7 @@ def test_auto_false_concrete_model_request_keeps_requested_model_for_multimodal(
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == vision_model.id
     assert record.router_result is None
 
@@ -797,7 +1047,7 @@ def test_model_auto_flag_keeps_original_model_on_vip_channel(monkeypatch):
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == source_model.id
     assert record.router_result is None
 
@@ -960,7 +1210,7 @@ def test_small_auto_request_uses_routing_model_before_complexity(monkeypatch):
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
     assert record.router_result == "auto:small_request_routing"
@@ -998,7 +1248,7 @@ def test_auto_route_without_routing_model_uses_fallback_and_records_router_resul
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == fallback_model.id
     assert record.task_status == "success"
     assert record.router_result == (
@@ -1040,7 +1290,7 @@ def test_small_auto_request_uses_routing_model_directly(monkeypatch):
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
     assert record.router_result == "auto:small_request_routing"
@@ -1158,7 +1408,7 @@ def test_three_thousand_token_non_auto_request_skips_unneeded_routing(monkeypatc
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == user_model.id
     assert record.router_result is None
 
@@ -1211,7 +1461,7 @@ def test_non_auto_request_does_not_call_routing_llm_and_keeps_user_model(monkeyp
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == user_model.id
     assert record.router_result is None
 
@@ -1266,7 +1516,7 @@ def test_small_auto_request_records_small_request_latency(monkeypatch):
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.router_result == "auto:small_request_routing"
     assert record.model_choosing_latency == 125
 
@@ -1305,7 +1555,7 @@ def test_small_auto_request_routes_directly_to_routing_server(monkeypatch):
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
     assert record.router_result == "auto:small_request_routing"
@@ -1344,7 +1594,7 @@ def test_auto_route_without_routing_server_uses_fallback_and_records_router_resu
     )
 
     assert response.status_code == 200
-    record = RequestRecord.objects.get()
+    record = _external_request_record()
     assert record.model_id == fallback_model.id
     assert record.task_status == "success"
     assert record.router_result == (
