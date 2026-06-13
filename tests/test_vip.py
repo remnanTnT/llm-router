@@ -192,19 +192,44 @@ class TestVIPSelectCandidates:
         assert n1.vip is False and n2.vip is False
         assert {s.id for s in candidates} == {n1.id, n2.id}
 
-    def test_all_vips_cooling_cancels_first_and_returns_just_it(self):
+    def test_all_vips_cooling_cancels_least_loaded_and_returns_just_it(self):
         m = make_model("m", vip=3)
-        v1 = make_server(m.id, "http://v1.example", vip=True, vip_cooldown=timezone.now())
-        v2 = make_server(m.id, "http://v2.example", vip=True, vip_cooldown=timezone.now())
+        v1 = make_server(m.id, "http://v1.example", vip=True, vip_cooldown=timezone.now(), workload=2)
+        v2 = make_server(m.id, "http://v2.example", vip=True, vip_cooldown=timezone.now(), workload=1)
 
         candidates, served = VIPChannelService().select_candidates(m)
 
         v1.refresh_from_db()
         v2.refresh_from_db()
         assert served is True
-        assert candidates == [v1]
-        assert v1.vip_cooldown is None
-        assert v2.vip_cooldown is not None  # untouched
+        assert candidates == [v2]
+        assert v1.vip_cooldown is not None  # untouched
+        assert v2.vip_cooldown is None
+
+    def test_zero_vip_promotes_random_tied_least_loaded_normal(self, monkeypatch):
+        m = make_model("m", vip=3)
+        n1 = make_server(m.id, "http://n1.example", workload=1)
+        n2 = make_server(m.id, "http://n2.example", workload=1)
+        n3 = make_server(m.id, "http://n3.example", workload=5)
+        choices = []
+
+        def choose(options):
+            choices.append(list(options))
+            return options[1]
+
+        monkeypatch.setattr("router.route_algorithm.least_connection.random.choice", choose)
+
+        candidates, served = VIPChannelService().select_candidates(m)
+
+        n1.refresh_from_db()
+        n2.refresh_from_db()
+        n3.refresh_from_db()
+        assert served is True
+        assert candidates == [n2]
+        assert n1.vip is False
+        assert n2.vip is True
+        assert n3.vip is False
+        assert [[server.id for server in options] for options in choices] == [[n1.id, n2.id]]
 
     def test_scale_up_cancels_cooling_when_projected_exceeds_threshold(self):
         m = make_model("m", vip=3)

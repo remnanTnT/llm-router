@@ -6,6 +6,7 @@ from typing import Any
 from router.config import APP_CONFIG
 from router.repositories.requests import RequestRepository
 from router.repositories.servers import ServerRepository
+from router.route_algorithm.least_connection import LeastConnectionServerChooser
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ class VIPChannelService:
         vip_config = APP_CONFIG.get("vip", {})
         self.cooldown_seconds = int(vip_config.get("cooldown_seconds", 300))
         self.min_normal_servers = int(vip_config.get("min_normal_servers", 2))
+        self.workload_chooser = LeastConnectionServerChooser.for_server_workload()
 
     @staticmethod
     def is_vip_eligible(model) -> bool:
@@ -51,7 +53,7 @@ class VIPChannelService:
 
         active = [s for s in vip_set if s.vip_cooldown is None]
         if not active:
-            target = vip_set[0]
+            target = self._least_workload(vip_set)
             ServerRepository.cancel_vip_cooldown(target)
             return [target], True
 
@@ -102,6 +104,5 @@ class VIPChannelService:
         if total_load / projected < threshold:
             ServerRepository.mark_vip_cooldown(self._least_workload(active))
 
-    @staticmethod
-    def _least_workload(servers: list[Any]) -> Any:
-        return min(servers, key=lambda s: ((s.workload or 0), s.id))
+    def _least_workload(self, servers: list[Any]) -> Any:
+        return self.workload_chooser.choose_least_loaded(servers)

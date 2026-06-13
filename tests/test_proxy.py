@@ -269,6 +269,67 @@ def test_auto_route_choosing_request_uses_least_workload_server(monkeypatch):
     assert _llm_choosing_record().target_pod_ip == "http://idle-router.example"
 
 
+def test_auto_route_choosing_request_randomizes_tied_workload_servers(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    first = Server.objects.create(
+        model_id=routing_model.id,
+        base_url="http://first-router.example",
+        is_online=True,
+        workload=1,
+    )
+    second = Server.objects.create(
+        model_id=routing_model.id,
+        base_url="http://second-router.example",
+        is_online=True,
+        workload=1,
+    )
+    choices = []
+
+    def choose(options):
+        choices.append(list(options))
+        return options[1]
+
+    def fake_post(url, json, headers, timeout):
+        assert url == "http://second-router.example/chat/completions"
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.workload == 1
+        assert second.workload == 2
+        response = MagicMock()
+        response.status_code = 200
+        response.reason = "OK"
+        response.content = b'{"choices":[{"message":{"content":"{\\"complexity\\":5}"}}]}'
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    monkeypatch.setattr("router.route_algorithm.least_connection.random.choice", choose)
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+    context = ServerSelectionContext(
+        request_id=123,
+        ip_id=None,
+        model_id=None,
+        model_name="auto",
+        path="chat/completions",
+        method="POST",
+        is_stream=False,
+        body=b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+    )
+
+    model, router_result = AutoRouteAlgorithm(_FailingRoutingChooser())._query_routing_llm(
+        context.body,
+        MagicMock(id=123),
+        context,
+        [target_model],
+        [target_model.model_name],
+    )
+
+    assert model == target_model
+    assert router_result == "complexity:5"
+    assert [[server.id for server in options] for options in choices] == [[first.id, second.id]]
+    assert _llm_choosing_record().target_pod_ip == "http://second-router.example"
+
+
 def test_auto_route_choosing_request_decrements_workload_after_exception(monkeypatch):
     fallback_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
     target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
