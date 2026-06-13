@@ -12,12 +12,14 @@ python manage.py test init_db
 
 ## `check_db_schema`
 
-Diffs the live PostgreSQL schema against Django model definitions: missing tables/columns, extra columns, default mismatches, NULL/NOT NULL mismatches, type mismatches, single-column unique-constraint mismatches, and missing model-declared indexes.
+Diffs the live PostgreSQL schema against every model in `router/models.py`: missing tables/columns, extra columns, extra defaults, missing auto-increment identity on auto primary keys, NULL/NOT NULL mismatches, type mismatches, single-column unique-constraint mismatches, and missing model-declared indexes.
 
 ```bash
 python manage.py test check_db_schema --dry-run
 python manage.py test check_db_schema --fix
 ```
+
+Use `--dry-run` first in production. `--fix` emits and executes corrective DDL, including concurrent index creation on PostgreSQL.
 
 ## `check_server_health`
 
@@ -48,7 +50,7 @@ python manage.py prod release_vip_cooldowns --cooldown 600 --dry-run
 
 ## `refresh_user_info`
 
-Refresh `user_ips` table from CMDB source. Requires `cmdb.enabled` to be true in `config.yaml`. Supports dry-run mode to generate SQL without applying changes.
+Refresh `user_ips` table from the CMDB source. Requires `cmdb.enabled` to be true in `config.yaml`. Supports dry-run mode to generate SQL without applying changes and `--ip` to refresh one address.
 
 ```bash
 python manage.py prod refresh_user_info --dry-run

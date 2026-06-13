@@ -1,8 +1,8 @@
 # Configuration
 
-Default configuration is in `config.yaml`. Values are deep-merged onto built-in defaults in `router/config.py`.
+Default configuration is loaded from `config.yaml` and deep-merged onto built-in defaults in `router/config.py`. Optional keys that are not present in the repository sample can still be supplied in your own config file.
 
-## `config.yaml`
+## Example `config.yaml`
 
 ```yaml
 log_path: ./logs/requests
@@ -34,6 +34,11 @@ load_balancer:
   mark_unhealthy_status_codes: [502, 503, 504]
   health_check_timeout_seconds: 2
   chooser_class: router.route_algorithm.prefix_cache_preble.PrefixCachePrebleServerChooser
+  circuit_breaker:
+    failure_threshold: 3
+    base_cooldown_seconds: 30
+    max_cooldown_seconds: 3000
+    success_threshold: 1
 
 prefix_cache:
   primary_match_threshold: 0.9
@@ -49,6 +54,19 @@ prefix_cache:
 opencode:
   enabled: true
   block_max_version: "1.2.26"
+
+admission:
+  allow_when_user_info_missing: true
+
+cmdb:
+  enabled: false
+  dummy: true
+  refresh_interval_between_ips_seconds: 1
+
+router:
+  fallback_model: DeepSeek-V4-Flash
+  system_prompt_path: router/assets/router_system_prompt.md
+  auto_concurrent_limit: 10
 
 database:
   host: localhost
@@ -104,3 +122,17 @@ export USE_SQLITE_FOR_TESTS=1
 `start_prod.sh` defaults to Redis port `6379`; `start_test.sh` defaults to Redis port `6380`. Both scripts start local Redis automatically only for local Redis hosts. Install Redis first, for example with `sudo dnf install redis`.
 
 Prefix cache blocks are measured in Python Unicode characters, not LLM tokenizer tokens. This keeps matching language-neutral for Chinese and other no-whitespace prompts. The final partial block is also stored so short prompts and exact full-prefix matches are cacheable.
+
+## Important Sections
+
+`server.bind` controls the normal HTTP listener. `server.vip_port` is used to detect VIP-channel traffic; non-VIP IPs that hit the VIP port receive HTTP 503. `server.data_upload_max_memory_size_mb` feeds Django's upload/body size limit.
+
+`vip.cooldown_seconds` controls how long a VIP server stays in cooldown before it can be demoted to the normal pool. `vip.min_normal_servers` keeps at least that many normal servers available when VIP scale-up promotes servers.
+
+`proxy.default_max_tokens` is injected into JSON bodies that omit `max_tokens`. `proxy.unknown_model_max_tokens` is used only when admission checks a request without a concrete model, such as exact `model: auto`. Stream and normal requests have separate connect/read timeout settings; streaming also has `stream_total_timeout_seconds`.
+
+`load_balancer.chooser_class` must point to a class implementing `choose(candidates, context, attempted_server_ids)`. The default prefix-cache chooser stores successful request prefixes in Redis and falls back to least-connection selection when no useful cache match exists. `retry_status_codes` controls which upstream HTTP statuses are eligible for another server attempt, while `mark_unhealthy_status_codes` controls passive circuit-breaker failures.
+
+`prefix_cache.primary_match_threshold` chooses among cached servers when the best per-server match is above the threshold. `secondary_match_threshold` chooses among partially matching servers before falling back to all candidates. `max_prefix_chars` caps the prefix text stored and checked per request. `prefix_block_chars` controls the character block size used to build Redis prefix hashes.
+
+`router.fallback_model` is used by auto routing when the classifier cannot produce a unique target and when an auto-selected model hits a context-overflow fallback. `router.system_prompt_path` points to the complexity-classifier prompt. `router.auto_concurrent_limit` is the base concurrency limit for exact `model: auto` requests before multiplying by `ips.concurrent_multiplier`.
