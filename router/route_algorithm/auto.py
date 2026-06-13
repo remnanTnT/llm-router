@@ -12,6 +12,7 @@ from router.repositories.models import ModelRepository
 from router.repositories.requests import RequestRepository
 from router.repositories.servers import ServerRepository
 from router.route_algorithm.base import ServerSelectionContext
+from router.route_algorithm.least_connection import LeastConnectionServerChooser
 from router.services import proxy_logging, proxy_response
 
 
@@ -34,6 +35,7 @@ class AutoRouteAlgorithm:
 
     def __init__(self, chooser=None):
         self.chooser = chooser
+        self.workload_chooser = LeastConnectionServerChooser.for_server_workload()
         self._router_system_prompt = None
 
     def should_auto_select(self, parsed, model, is_vip_channel: bool) -> bool:
@@ -440,10 +442,7 @@ class AutoRouteAlgorithm:
         )
 
     def _choose_routing_server(self, routing_servers: list[Any], context):
-        return min(
-            routing_servers,
-            key=lambda server: (server.workload or 0, server.id),
-        )
+        return self.workload_chooser.choose(routing_servers, context, set())
 
     def _routing_response_error_result(self, response) -> str:
         status_code = getattr(response, "status_code", None)

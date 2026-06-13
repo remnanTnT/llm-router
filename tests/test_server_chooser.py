@@ -78,6 +78,33 @@ def test_least_connection_chooser_selects_server_with_fewest_processing_requests
     assert selected.id == 2
 
 
+def test_least_connection_chooser_randomly_selects_among_tied_least_loaded_servers(monkeypatch):
+    chooser = LeastConnectionServerChooser(
+        lambda targets: {
+            "http://10.0.0.1:8000": 0,
+            "http://10.0.0.2:8000": 0,
+            "http://10.0.0.3:8000": 1,
+        }
+    )
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000"),
+        make_server(2, "http://10.0.0.2:8000"),
+        make_server(3, "http://10.0.0.3:8000"),
+    ]
+    choices = []
+
+    def choose(options):
+        choices.append(list(options))
+        return options[1]
+
+    monkeypatch.setattr("router.route_algorithm.least_connection.random.choice", choose)
+
+    selected = chooser.choose(candidates, make_context(), set())
+
+    assert selected.id == 2
+    assert [[server.id for server in options] for options in choices] == [[1, 2]]
+
+
 def test_least_connection_chooser_skips_attempted_servers():
     chooser = LeastConnectionServerChooser(lambda targets: {"http://10.0.0.1:8000": 0, "http://10.0.0.2:8000": 1})
     candidates = [make_server(1, "http://10.0.0.1:8000"), make_server(2, "http://10.0.0.2:8000")]

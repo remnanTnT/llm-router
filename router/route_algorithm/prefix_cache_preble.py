@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import random
 import threading
 import time
 from dataclasses import dataclass, field
@@ -280,21 +279,14 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             pass
         return results
 
-    def _choose_least_loaded(self, available: Sequence[Any]) -> Any | None:
-        if not available:
-            return None
-        targets = [server.base_url for server in available]
-        processing_counts = self._count_processing(targets)
+    def _log_connection_counts(self, available: Sequence[Any], load_counts: dict[int, int]) -> None:
         logger.info("[PrefixCachePreble] connection counts per server:")
         for server in available:
-            count = processing_counts.get(server.base_url, 0)
+            count = load_counts.get(server.id, 0)
             logger.info(
                 "  server_id=%-6d base_url=%-40s connections=%d",
                 server.id, server.base_url, count,
             )
-        min_count = min(processing_counts.get(server.base_url, 0) for server in available)
-        least_loaded = [server for server in available if processing_counts.get(server.base_url, 0) == min_count]
-        return random.choice(least_loaded)
 
     def _prefix_chars_from_body(self, body: bytes) -> str:
         text = self._text_from_body(body)
