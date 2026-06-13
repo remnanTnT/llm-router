@@ -87,6 +87,11 @@ class _PrefixCacheChooser(_RoutingChooser):
         return {name: self.ratios.get(name, 0.0) for name in model_names}
 
 
+class _FailingPrefixCacheChooser(_RoutingChooser):
+    def get_all_model_prefix_ratios(self, body, model_names):
+        raise AssertionError("prefix-cache ratios should not be checked")
+
+
 def test_auto_route_request_disables_thinking(monkeypatch):
     target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
     routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
@@ -209,6 +214,43 @@ def test_auto_route_payload_only_forwards_user_role_messages(monkeypatch):
     assert "secret-skill" not in payload_text
     assert "secret-mcp" not in payload_text
     assert "secret_tool" not in payload_text
+
+
+def test_auto_route_payload_truncates_long_user_messages(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+    long_content = "x" * 501
+    sent = {}
+
+    def fake_post(url, json, headers, timeout):
+        sent["json"] = json
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+
+    body = json.dumps({
+        "model": "auto",
+        "messages": [{"role": "user", "content": long_content}],
+    }).encode("utf-8")
+
+    model, router_result = AutoRouteAlgorithm(_RoutingChooser())._query_routing_llm(
+        body,
+        MagicMock(id=123),
+        MagicMock(),
+        [target_model],
+        [target_model.model_name],
+    )
+
+    assert model == target_model
+    assert router_result == "complexity:5"
+    assert sent["json"]["messages"][-1] == {
+        "role": "user",
+        "content": f"Here is the user's 1st message:\n```\n{'x' * 500}...\n```\n",
+    }
 
 
 def test_auto_route_without_active_target_model_records_router_result():
@@ -372,7 +414,7 @@ def test_auto_route_prefix_cache_uses_only_auto_selectable_models(monkeypatch):
 
     service = AutoRouteAlgorithm(_PrefixCacheChooser({"router-model": 0.99, "target-model": 0.95}))
     model, router_result = service._get_auto_route_model(
-        b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+        b'{"model":"auto","messages":[{"role":"user","content":"earlier"},{"role":"user","content":"hello"}]}',
         MagicMock(id=123),
         MagicMock(),
     )
@@ -399,13 +441,71 @@ def test_auto_route_prefix_cache_can_select_auto_false_target(monkeypatch):
 
     service = AutoRouteAlgorithm(_PrefixCacheChooser({"low-model": 0.95, "high-model": 0.5}))
     model, router_result = service._get_auto_route_model(
-        b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+        b'{"model":"auto","messages":[{"role":"user","content":"earlier"},{"role":"user","content":"hello"}]}',
         MagicMock(id=123),
         MagicMock(),
     )
 
     assert model == low_model
     assert router_result == "cache_hit"
+
+
+def test_auto_route_prefix_cache_multiple_hits_uses_routing_llm(monkeypatch):
+    low_model = Model.objects.create(
+        model_name="low-model",
+        auto=False,
+        complexity_min=1,
+        complexity_max=3,
+    )
+    Model.objects.create(
+        model_name="high-model",
+        auto=True,
+        complexity_min=7,
+        complexity_max=10,
+    )
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":1}'}}]}
+        return response
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+
+    service = AutoRouteAlgorithm(_PrefixCacheChooser({"low-model": 0.95, "high-model": 0.9}))
+    model, router_result = service._get_auto_route_model(
+        b'{"model":"auto","messages":[{"role":"user","content":"earlier"},{"role":"user","content":"hello"}]}',
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model == low_model
+    assert router_result == "complexity:1"
+
+
+def test_auto_route_single_user_prompt_skips_prefix_cache_and_uses_routing_llm(monkeypatch):
+    target_model = Model.objects.create(model_name="target-model", auto=True, complexity_min=1, complexity_max=10)
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+
+    model, router_result = AutoRouteAlgorithm(_FailingPrefixCacheChooser())._get_auto_route_model(
+        b'{"model":"auto","messages":[{"role":"user","content":"hello"}]}',
+        MagicMock(id=123),
+        MagicMock(),
+    )
+
+    assert model == target_model
+    assert router_result == "complexity:5"
 
 
 def test_case_insensitive_auto_request_selects_target_model(monkeypatch):
@@ -447,7 +547,7 @@ def test_case_insensitive_auto_request_selects_target_model(monkeypatch):
     assert response.status_code == 200
     record = RequestRecord.objects.get()
     assert record.model_id == target_model.id
-    assert record.router_result == "complexity:5"
+    assert record.router_result == "AUTO:complexity:5"
 
 
 def test_model_auto_flag_triggers_auto_selection_on_normal_channel(monkeypatch):
@@ -491,7 +591,7 @@ def test_model_auto_flag_triggers_auto_selection_on_normal_channel(monkeypatch):
     assert response.status_code == 200
     record = RequestRecord.objects.get()
     assert record.model_id == target_model.id
-    assert record.router_result == "complexity:4"
+    assert record.router_result == "source-model:complexity:4"
 
 
 def test_auto_entrance_concurrency_uses_requested_model_then_routes_by_complexity(monkeypatch):
@@ -551,7 +651,7 @@ def test_auto_entrance_concurrency_uses_requested_model_then_routes_by_complexit
     assert concurrency_calls == [(source_model, True)]
     record = RequestRecord.objects.get()
     assert record.model_id == target_model.id
-    assert record.router_result == "complexity:1"
+    assert record.router_result == "source-model:complexity:1"
 
 
 def test_auto_entrance_multimodal_request_selects_auto_false_multimodal_model(monkeypatch):
@@ -604,7 +704,7 @@ def test_auto_entrance_multimodal_request_selects_auto_false_multimodal_model(mo
     assert response.status_code == 200
     record = RequestRecord.objects.get()
     assert record.model_id == vision_model.id
-    assert record.router_result == "multimodal_bypass"
+    assert record.router_result == "source-model:multimodal_bypass"
 
 
 def test_auto_false_concrete_model_request_keeps_requested_model_for_multimodal(monkeypatch):
@@ -863,7 +963,7 @@ def test_small_auto_request_uses_routing_model_before_complexity(monkeypatch):
     record = RequestRecord.objects.get()
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
-    assert record.router_result == "small_request_routing"
+    assert record.router_result == "auto:small_request_routing"
 
 
 def test_auto_route_without_routing_model_uses_fallback_and_records_router_result(monkeypatch):
@@ -902,7 +1002,7 @@ def test_auto_route_without_routing_model_uses_fallback_and_records_router_resul
     assert record.model_id == fallback_model.id
     assert record.task_status == "success"
     assert record.router_result == (
-        "routing_failed:missing_routing_model:no routing model configured"
+        "auto:routing_failed:missing_routing_model:no routing model configured"
     )
 
 
@@ -943,7 +1043,7 @@ def test_small_auto_request_uses_routing_model_directly(monkeypatch):
     record = RequestRecord.objects.get()
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
-    assert record.router_result == "small_request_routing"
+    assert record.router_result == "auto:small_request_routing"
 
 
 def test_update_body_model_can_disable_thinking():
@@ -1167,7 +1267,7 @@ def test_small_auto_request_records_small_request_latency(monkeypatch):
 
     assert response.status_code == 200
     record = RequestRecord.objects.get()
-    assert record.router_result == "small_request_routing"
+    assert record.router_result == "auto:small_request_routing"
     assert record.model_choosing_latency == 125
 
 
@@ -1208,7 +1308,7 @@ def test_small_auto_request_routes_directly_to_routing_server(monkeypatch):
     record = RequestRecord.objects.get()
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
-    assert record.router_result == "small_request_routing"
+    assert record.router_result == "auto:small_request_routing"
 
 
 def test_auto_route_without_routing_server_uses_fallback_and_records_router_result(monkeypatch):
@@ -1248,7 +1348,7 @@ def test_auto_route_without_routing_server_uses_fallback_and_records_router_resu
     assert record.model_id == fallback_model.id
     assert record.task_status == "success"
     assert record.router_result == (
-        "routing_failed:missing_routing_server:no available routing server"
+        "auto:routing_failed:missing_routing_server:no available routing server"
     )
 
 
@@ -1291,4 +1391,4 @@ def test_small_auto_request_succeeds_with_routing_server(monkeypatch):
     record = RequestRecord.objects.get()
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
-    assert record.router_result == "small_request_routing"
+    assert record.router_result == "auto:small_request_routing"
