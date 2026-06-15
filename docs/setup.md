@@ -37,6 +37,48 @@ Check schema presence without changing anything:
 python manage.py test check_db_schema --dry-run
 ```
 
+## Configure Auto Routing
+
+Auto routing needs at least one routing model server and at least one target model.
+
+Minimal text setup:
+
+```sql
+INSERT INTO models (model_name, is_routing_model)
+VALUES ('router-model', TRUE);
+
+INSERT INTO models (model_name, complexity_min, complexity_max)
+VALUES
+  ('fast-model', 1, 3),
+  ('balanced-model', 4, 7),
+  ('reasoning-model', 8, 10);
+
+INSERT INTO servers (model_id, base_url, is_online)
+VALUES
+  ((SELECT id FROM models WHERE model_name = 'router-model'), 'http://router.example/v1', TRUE),
+  ((SELECT id FROM models WHERE model_name = 'fast-model'), 'http://fast.example/v1', TRUE),
+  ((SELECT id FROM models WHERE model_name = 'balanced-model'), 'http://balanced.example/v1', TRUE),
+  ((SELECT id FROM models WHERE model_name = 'reasoning-model'), 'http://reasoning.example/v1', TRUE);
+```
+
+Optional multimodal target:
+
+```sql
+INSERT INTO models (model_name, multimodal)
+VALUES ('vision-model', TRUE);
+```
+
+Optional config:
+
+```yaml
+router:
+  fallback_model: DeepSeek-V4-Flash
+  system_prompt_path: router/assets/router_system_prompt.md
+  auto_concurrent_limit: 10
+```
+
+See [Auto Routing](auto_routing.md) for the full model-selection sequence, cache shortcut, and fallback behavior.
+
 ## Run Locally With Django Dev Server
 
 ```bash

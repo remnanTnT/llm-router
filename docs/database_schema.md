@@ -1,32 +1,77 @@
 # Database Schema
 
-The database schema is intentionally not managed by this project. Django models are unmanaged (`managed = False`) and no schema-changing migrations should be generated or applied.
+The database schema is intentionally not owned by Django migrations. Router models use `managed = False`; do not run `makemigrations` for normal schema drift. The live database should be validated with `check_db_schema`.
 
 ## Required Tables
 
-The router expects these existing tables:
+`check_db_schema` compares the live database against every model in `router/models.py`. The required tables are:
 
 - `ips`
 - `departments`
 - `user_ips`
 - `models`
+- `servers`
 - `requests`
 - `whitelist`
-- `servers`
+- `server_operations`
+- `mr_live_review`
+- `codehub_review`
 
 ## Timezone
 
-All datetime columns should use `TIMESTAMPTZ`. The router runs with `TIME_ZONE = Asia/Shanghai` and sets the database connection time zone to `Asia/Shanghai`, so request lifecycle times such as `send_time` and `end_time` are saved and read in Beijing time.
+Datetime columns should use `TIMESTAMPTZ` on PostgreSQL. The router runs with `TIME_ZONE = Asia/Shanghai` and sets the database connection time zone to `Asia/Shanghai`, so request lifecycle times such as `send_time` and `end_time` are saved and read in Beijing time.
 
-## `ips` Table
+## Core Access Tables
+
+`ips.vip` is admin-managed. Set it to `TRUE` for client IPs allowed to use `server.vip_port`; non-VIP IPs that use the VIP port receive HTTP 503.
 
 ```sql
 ALTER TABLE ips ADD COLUMN vip BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE ips ADD COLUMN concurrent_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1.0;
 ```
 
-`vip` is admin-managed. Set it to `TRUE` for client IPs that may send traffic to `server.vip_port`; non-VIP IPs that use the VIP port receive HTTP 503 with the configured normal port in the error message.
+`departments.is_allowed`, `user_ips.department_id`, and `whitelist.is_allowed` form the permission chain:
+
+```text
+user_ips -> departments.is_allowed -> whitelist.is_allowed
+```
+
+When `admission.allow_when_user_info_missing` is true, missing `user_ips` data does not block the request.
+
+## `models` Table
+
+Important model columns:
+
+```sql
+ALTER TABLE models ADD COLUMN concurrent_limit INTEGER NULL DEFAULT 3;
+ALTER TABLE models ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 20480;
+ALTER TABLE models ADD COLUMN vip INTEGER NULL;
+ALTER TABLE models ADD COLUMN deprecation VARCHAR(500) NULL;
+ALTER TABLE models ADD COLUMN is_routing_model BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE models ADD COLUMN auto BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE models ADD COLUMN max_context_window INTEGER NOT NULL DEFAULT 204800;
+ALTER TABLE models ADD COLUMN complexity_min INTEGER NULL;
+ALTER TABLE models ADD COLUMN complexity_max INTEGER NULL;
+ALTER TABLE models ADD COLUMN multimodal BOOLEAN NOT NULL DEFAULT FALSE;
+```
+
+`vip` is admin-managed. Set it to a positive integer to enable VIP routing for that model. The value is the per-active-VIP-server workload threshold above which the router promotes another normal server into the VIP pool. `NULL` or `0` disables VIP routing for the model.
+
+`deprecation` is admin-managed. If it is not `NULL`, the router returns HTTP 400 with this value as the error message.
+
+`is_routing_model` marks models that can receive internal complexity-classification requests and normal-port small-request routing.
+
+`auto` controls auto-routing entry, not target eligibility. Exact `model: auto` requests enter auto routing case-insensitively. On the normal port, requests for a concrete model with `auto = TRUE` also enter auto routing. On the VIP port, concrete model requests keep the requested model.
+
+`complexity_min` and `complexity_max` are text auto-routing target bounds. Both must be non-NULL, between 1 and 10, and `complexity_min <= complexity_max`. A returned complexity score must match exactly one target model; otherwise the router uses `router.fallback_model` where applicable and records the reason in `requests.router_result`.
+
+`multimodal` marks the model as eligible for auto-routed requests that contain `image_url` chat parts.
+
+`max_context_window` is used for context-overflow fallback. When a true auto-selected model returns HTTP 400 and the failure reason contains this value, the router can retry with `router.fallback_model`.
 
 ## `servers` Table
+
+Current server columns:
 
 ```sql
 CREATE TABLE servers (
@@ -40,8 +85,14 @@ CREATE TABLE servers (
     last_failure_at TIMESTAMPTZ NULL,
     cache_time INTEGER NOT NULL DEFAULT 3600,
     csb_token VARCHAR(500) NULL,
+    circuit_state VARCHAR(20) NOT NULL DEFAULT 'closed',
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_state_change_at TIMESTAMPTZ NULL,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 30,
+    workload INTEGER NOT NULL DEFAULT 0,
     vip BOOLEAN NOT NULL DEFAULT FALSE,
     vip_cooldown TIMESTAMPTZ NULL,
+    context_window INTEGER NULL,
     created_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NULL,
     deleted_at TIMESTAMPTZ NULL
@@ -52,56 +103,83 @@ CREATE INDEX servers_online_model_idx
     WHERE deleted_at IS NULL;
 ```
 
-`vip` and `vip_cooldown` are router-managed; do not edit them by hand. The router promotes and demotes servers automatically based on VIP request load.
+`base_url` should include the upstream API prefix expected by the router, normally `/v1`. The proxy appends the incoming path such as `chat/completions`.
 
-## `models` Table
+`cache_time` controls how long successful prefix-cache entries for this server stay valid in Redis.
 
-```sql
-ALTER TABLE models ADD COLUMN vip INTEGER NULL;
-ALTER TABLE models ADD COLUMN deprecation VARCHAR(500) NULL;
-ALTER TABLE models ADD COLUMN auto BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE models ADD COLUMN complexity_min INTEGER NULL;
-ALTER TABLE models ADD COLUMN complexity_max INTEGER NULL;
-ALTER TABLE models ADD COLUMN multimodal BOOLEAN NOT NULL DEFAULT FALSE;
-```
+`csb_token`, when present, is injected into upstream requests as the `csb-token` header.
 
-`vip` is admin-managed. Set it to a positive integer to enable VIP routing for that model: it is the per-active-VIP-server workload threshold above which the router promotes another normal server into the VIP pool. `NULL` or `0` disables VIP routing for the model — VIP-port traffic from VIP-authorized IPs for it is served from the normal pool.
+`circuit_state`, `consecutive_failures`, `last_state_change_at`, and `cooldown_seconds` are router-managed circuit-breaker fields. Closed servers are routable. Open servers become half-open after cooldown. Half-open servers are routable for probe traffic.
 
-`deprecation` is admin-managed. If it is not `NULL`, the router will return a 400 error with the value of this column as the error message, effectively disabling the model.
+`workload` is router-managed. It is incremented before an upstream send and decremented when the request finishes or stale processing cleanup runs. Auto-routing classifier servers are selected by this value.
 
-`auto` is admin-managed. It controls auto-routing entrance, not target eligibility. Requests whose model name is `auto` (case-insensitive) enter auto routing. On the normal port, requests for a concrete model with `auto = TRUE` also enter auto routing; on the VIP port, concrete model requests keep the requested model.
+`vip` and `vip_cooldown` are router-managed. The router promotes and demotes servers automatically based on VIP request load.
 
-`complexity_min` and `complexity_max` are admin-managed text auto-routing target bounds. For an auto-routed text request, the routing model returns a complexity score from 1 to 10, and the router selects the active model whose inclusive range contains that score. If either column is `NULL`, the model is excluded from complexity-based auto selection. A score must match exactly one model; zero or multiple matching models fall back to the configured default model and record a routing failure reason in `router_result`. Stored routing results are prefixed with the originally requested model name, for example `auto:complexity:7` or `glm-5:routing_failed:missing_routing_server:no available routing server`.
+`context_window` is an optional per-server request-size ceiling. If it is set, candidate selection excludes that server when `requests.estimate_tokens` is larger than the context window.
 
-`multimodal` is admin-managed multimodal auto-routing target eligibility. For an auto-routed image request, the router bypasses text complexity classification and selects an active `multimodal = TRUE` model. Concrete requests for models with `auto = FALSE` keep the requested model, even when the request contains image content.
+## `requests` Table
 
-## Request-Table Indexes
-
-The required request-table indexes are declared in `RequestRecord._meta.indexes`. The processing partial indexes are required for the LLM request hot path because the `requests` table can be very large while active `processing` rows are small. `check_db_schema` reports missing model-declared indexes so the dry run can catch drift before production traffic depends on them; `--fix` creates missing model indexes with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` on PostgreSQL.
-
-## Load-Balancer Columns
-
-The load balancer also records the selected backend and number of backend attempts per request:
+Current request-tracking columns include:
 
 ```sql
-ALTER TABLE servers ADD COLUMN cache_time INTEGER NOT NULL DEFAULT 3600;
 ALTER TABLE requests ALTER COLUMN target_pod_ip TYPE VARCHAR(500);
 ALTER TABLE requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN prefix_cache DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE requests ADD COLUMN final_prefix_cache INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN last_match BIGINT NULL;
+ALTER TABLE requests ADD COLUMN router_result VARCHAR(300) NULL;
+ALTER TABLE requests ADD COLUMN estimate_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN model_choosing_latency BIGINT NULL;
 ```
 
-Internal routing-model calls used to choose an auto-routed target are also recorded in
-`requests`. These rows use `ip_id = 0`, `is_stream = FALSE`, and the routing model's
-`model_id`; the original client request row remains separate and its `latency` still
-measures the full end-to-end request.
+`task_status` is one of the request lifecycle states used by the router, including `processing`, `success`, `failed`, `agent_disconnected`, and `incomplete`.
+
+`attempt_count`, `target_pod_ip`, `prefix_cache`, and `last_match` are updated before each upstream attempt.
+
+`final_prefix_cache` stores cached-token usage parsed from successful upstream responses when available.
+
+`router_result` stores auto-routing and small-request-routing decisions, prefixed by the originally requested model name. Examples: `auto:complexity:7`, `AUTO:cache_hit`, `source-model:small_request_routing`, `auto:routing_failed:missing_routing_server:no available routing server`.
+
+`estimate_tokens` stores the fast token estimate from the original request body. It is used for `servers.context_window` filtering.
+
+`model_choosing_latency` stores elapsed milliseconds for model choosing when the request uses true auto selection or small-request routing.
+
+Internal routing-model calls used to classify auto-routed targets are also recorded in `requests`. These rows use `ip_id = 0`, `user_agent = "llm-choosing"`, `is_stream = FALSE`, and the routing model's `model_id`. Statistics APIs exclude `ip_id = 0` rows.
+
+The required request-table indexes are declared in `RequestRecord._meta.indexes`. Processing partial indexes are important on large `requests` tables because the hot path counts only active `processing` rows.
+
+## Admin And Review Tables
+
+`server_operations` records `/api/add_server` operations:
+
+```sql
+CREATE TABLE server_operations (
+    id BIGSERIAL PRIMARY KEY,
+    server_id INTEGER NULL,
+    operation_type VARCHAR(50) NOT NULL,
+    request_data JSONB NULL,
+    response_data JSONB NULL,
+    status VARCHAR(20) NOT NULL,
+    error_message TEXT NULL,
+    created_at TIMESTAMPTZ NULL,
+    updated_at TIMESTAMPTZ NULL,
+    deleted_at TIMESTAMPTZ NULL
+);
+```
+
+`mr_live_review` stores MR review ingestion and reporting data. `discussion_id` must be unique.
+
+`codehub_review` stores CodeHub review issues. `issue_hash` must be unique.
+
+The field definitions for these reporting tables are in `router/models.py`; `check_db_schema --dry-run` is the safest way to confirm that a live database matches the current model definitions.
 
 ## Schema Validation
 
-Use the management commands to validate schema state without altering tables:
+Use the management commands to validate schema state:
 
 ```bash
 python manage.py test init_db
 python manage.py test check_db_schema --dry-run
 ```
+
+`check_db_schema --fix` can create missing tables, add missing columns, drop extra columns/defaults, fix nullable/type/unique mismatches, add missing auto-increment identity, and create missing model-declared indexes. Review the dry-run output before applying fixes to production.
