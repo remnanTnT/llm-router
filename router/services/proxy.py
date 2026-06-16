@@ -456,8 +456,18 @@ class ProxyService:
         attempts,
     ):
         if is_stream:
-            content = upstream.content
-            upstream.close()
+            # Drain the error body and close defensively: a broken connection
+            # can make content access or close() raise, and that must not skip
+            # finish_upstream_error (which would orphan a 'processing' record
+            # whose workload was already handed back in the attempt finally).
+            try:
+                content = upstream.content
+            except Exception:
+                content = b""
+            try:
+                upstream.close()
+            except Exception:
+                pass
 
         fail_reason = proxy_response.extract_fail_reason(content, reason)
         switch = self.auto_router.context_overflow_switch(
@@ -662,8 +672,14 @@ class ProxyService:
                     context,
                 )
             finally:
-                upstream.close()
+                # Decrement workload before closing the upstream: a close() that
+                # raises on a broken connection must not skip the decrement, and
+                # finish_* has already run so cleanup_stale cannot reclaim it.
                 self._decrement_workload(server)
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
                 self._after_finish(served_as_vip, model, estimate_tokens=record.estimate_tokens)
 
         response = StreamingHttpResponse(generate(), status=200, content_type="text/event-stream")

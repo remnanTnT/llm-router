@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from django.db.models import F, Q, Value
+from django.db.models import Count, F, Q, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
 
 from router.models import Server
+
+# Arbitrary key for the workload-recalculation advisory lock. Only one
+# corrector run may hold it at a time so concurrent runs serialize.
+_ADVISORY_LOCK_KEY = 8723461
 
 
 class ServerRepository:
@@ -144,6 +148,81 @@ class ServerRepository:
             Server.objects.filter(base_url=base_url).update(
                 workload=Greatest(F("workload") - count, Value(0))
             )
+
+    @staticmethod
+    def recalculate_workload(
+        include_offline: bool = False,
+        apply: bool = False,
+    ) -> tuple[list[dict], list[dict]]:
+        """Reconcile ``Server.workload`` against in-flight processing requests.
+
+        The authoritative workload for a server is the number of
+        ``RequestRecord`` rows with ``task_status='processing'`` whose
+        ``target_pod_ip`` equals ``server.base_url`` (requests are linked to
+        servers by string, not a foreign key).
+
+        Returns ``(changes, orphans)`` where ``changes`` lists every server
+        whose stored workload differs from the expected count (with
+        ``before``/``after`` values), and ``orphans`` lists ``target_pod_ip``
+        values seen on processing records that match no non-deleted server.
+
+        Set ``apply=True`` to persist the corrected values. Uses a PostgreSQL
+        advisory lock (a no-op transaction on other backends) so concurrent
+        runs or workload mutations during the run cannot interleave.
+        """
+        from django.db import connection, transaction
+
+        from router.models import RequestRecord
+
+        with transaction.atomic():
+            if connection.vendor == "postgresql":
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        [_ADVISORY_LOCK_KEY],
+                    )
+
+            qs = RequestRecord.objects.filter(
+                task_status="processing", target_pod_ip__isnull=False
+            ).exclude(target_pod_ip="")
+            expected = {
+                row["target_pod_ip"]: row["count"]
+                for row in qs.values("target_pod_ip").annotate(count=Count("id"))
+            }
+
+            servers = ServerRepository._active_servers(include_offline)
+            changes: list[dict] = []
+            for server in servers:
+                target = expected.get(server.base_url, 0)
+                if server.workload == target:
+                    continue
+                changes.append(
+                    {
+                        "server_id": server.id,
+                        "base_url": server.base_url,
+                        "before": server.workload,
+                        "after": target,
+                    }
+                )
+                if apply:
+                    Server.objects.filter(id=server.id).update(workload=target)
+                    server.workload = target
+
+            known = {s.base_url for s in servers}
+            orphans = [
+                {"target_pod_ip": pod_ip, "count": count}
+                for pod_ip, count in expected.items()
+                if pod_ip not in known
+            ]
+            orphans.sort(key=lambda item: item["target_pod_ip"])
+            return changes, orphans
+
+    @staticmethod
+    def _active_servers(include_offline: bool) -> list[Server]:
+        qs = Server.objects.filter(deleted_at__isnull=True)
+        if not include_offline:
+            qs = qs.filter(is_online=True)
+        return list(qs.order_by("id"))
 
     @staticmethod
     def transition_to_half_open(server: Server) -> None:

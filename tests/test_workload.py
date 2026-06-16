@@ -251,3 +251,160 @@ def test_cleanup_stale_only_releases_filtered_model():
 
     server.refresh_from_db()
     assert server.workload == 1
+
+
+def test_recalculate_workload_no_drift_reports_no_changes():
+    server = Server.objects.create(base_url="http://ok.example", is_online=True, workload=2)
+    _make_stale_processing("http://ok.example", model_id=1)
+    _make_stale_processing("http://ok.example", model_id=1)
+
+    changes, orphans = ServerRepository.recalculate_workload()
+
+    assert changes == []
+    assert orphans == []
+    server.refresh_from_db()
+    assert server.workload == 2
+
+
+def test_recalculate_workload_detects_inflated_drift_without_applying():
+    server = Server.objects.create(base_url="http://drift.example", is_online=True, workload=5)
+    _make_stale_processing("http://drift.example", model_id=1)
+
+    changes, orphans = ServerRepository.recalculate_workload(apply=False)
+
+    assert len(changes) == 1
+    assert changes[0]["before"] == 5
+    assert changes[0]["after"] == 1
+    assert orphans == []
+    server.refresh_from_db()
+    assert server.workload == 5
+
+
+def test_recalculate_workload_apply_resets_to_processing_count():
+    inflated = Server.objects.create(base_url="http://inflated.example", is_online=True, workload=4)
+    deflated = Server.objects.create(base_url="http://deflated.example", is_online=True, workload=0)
+    _make_stale_processing("http://inflated.example", model_id=1)
+    _make_stale_processing("http://inflated.example", model_id=1)
+    _make_stale_processing("http://inflated.example", model_id=1)
+    _make_stale_processing("http://deflated.example", model_id=1)
+
+    changes, orphans = ServerRepository.recalculate_workload(apply=True)
+
+    changed_urls = {c["base_url"]: c for c in changes}
+    assert changed_urls["http://inflated.example"]["after"] == 3
+    assert changed_urls["http://deflated.example"]["after"] == 1
+    assert orphans == []
+    inflated.refresh_from_db()
+    deflated.refresh_from_db()
+    assert inflated.workload == 3
+    assert deflated.workload == 1
+
+
+def test_recalculate_workload_resets_idle_servers_to_zero():
+    idle = Server.objects.create(base_url="http://idle.example", is_online=True, workload=3)
+
+    changes, orphans = ServerRepository.recalculate_workload(apply=True)
+
+    assert len(changes) == 1
+    assert changes[0]["after"] == 0
+    assert orphans == []
+    idle.refresh_from_db()
+    assert idle.workload == 0
+
+
+def test_recalculate_workload_reports_orphan_targets():
+    Server.objects.create(base_url="http://known.example", is_online=True, workload=0)
+    _make_stale_processing("http://gone.example", model_id=1)
+    _make_stale_processing("http://gone.example", model_id=1)
+
+    changes, orphans = ServerRepository.recalculate_workload(apply=False)
+
+    assert changes == []
+    assert orphans == [{"target_pod_ip": "http://gone.example", "count": 2}]
+
+
+def test_recalculate_workload_default_skips_offline_servers():
+    online = Server.objects.create(base_url="http://online.example", is_online=True, workload=5)
+    offline = Server.objects.create(base_url="http://offline.example", is_online=False, workload=5)
+    _make_stale_processing("http://online.example", model_id=1)
+    _make_stale_processing("http://offline.example", model_id=1)
+    _make_stale_processing("http://offline.example", model_id=1)
+
+    changes, orphans = ServerRepository.recalculate_workload(apply=True)
+
+    changed_urls = {c["base_url"] for c in changes}
+    assert "http://online.example" in changed_urls
+    assert "http://offline.example" not in changed_urls
+    # Offline server has processing records but is not reconciled by default.
+    assert orphans == [
+        {"target_pod_ip": "http://offline.example", "count": 2}
+    ]
+    online.refresh_from_db()
+    offline.refresh_from_db()
+    assert online.workload == 1
+    assert offline.workload == 5
+
+
+def test_recalculate_workload_offline_flag_includes_offline_servers():
+    offline = Server.objects.create(base_url="http://offline.example", is_online=False, workload=5)
+    _make_stale_processing("http://offline.example", model_id=1)
+    _make_stale_processing("http://offline.example", model_id=1)
+
+    changes, orphans = ServerRepository.recalculate_workload(include_offline=True, apply=True)
+
+    assert len(changes) == 1
+    assert changes[0]["after"] == 2
+    assert orphans == []
+    offline.refresh_from_db()
+    assert offline.workload == 2
+
+
+def test_correct_workload_command_check_reports_drift_and_exits_nonzero(capsys):
+    from django.core.management import call_command
+
+    server = Server.objects.create(base_url="http://cmd.example", is_online=True, workload=5)
+    _make_stale_processing("http://cmd.example", model_id=1)
+
+    with pytest.raises(SystemExit) as exc_info:
+        call_command("correct_workload")
+
+    assert exc_info.value.code == 1
+    output = capsys.readouterr().out
+    assert "http://cmd.example" in output
+    assert "5 -> 1" in output
+    server.refresh_from_db()
+    assert server.workload == 5
+
+
+def test_correct_workload_command_fix_applies_changes_and_exits_zero(capsys):
+    from django.core.management import call_command
+
+    server = Server.objects.create(base_url="http://cmd.example", is_online=True, workload=5)
+    _make_stale_processing("http://cmd.example", model_id=1)
+
+    call_command("correct_workload", "--fix")
+
+    output = capsys.readouterr().out
+    assert "Corrected 1 server" in output
+    server.refresh_from_db()
+    assert server.workload == 1
+
+
+def test_correct_workload_command_clean_state_exits_zero(capsys):
+    from django.core.management import call_command
+
+    Server.objects.create(base_url="http://clean.example", is_online=True, workload=0)
+
+    call_command("correct_workload")
+
+    output = capsys.readouterr().out
+    assert "already match" in output
+
+
+def test_correct_workload_command_rejects_fix_with_dry_run():
+    from django.core.management import call_command
+
+    with pytest.raises(SystemExit) as exc_info:
+        call_command("correct_workload", "--fix", "--dry-run")
+
+    assert exc_info.value.code == 1
