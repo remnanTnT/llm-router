@@ -475,6 +475,7 @@ class ProxyService:
                 context.path,
                 model,
                 served_as_vip,
+                estimate_tokens=record.estimate_tokens,
             )
             if switched_candidates:
                 return _RouteAttemptResult(

@@ -102,3 +102,77 @@ def test_context_overflow_does_not_switch_when_explicit_model(monkeypatch):
     # it might only try once or retry the same server depending on policy.
     # The key is that it shouldn't return a 200 from flash_model.
     assert attempt_count >= 1
+
+
+def test_context_overflow_skips_flash_servers_below_estimate(monkeypatch):
+    # Setup models
+    flash_model = Model.objects.create(model_name="DeepSeek-V4-Flash")
+    other_model = Model.objects.create(
+        model_name="Other-Model",
+        auto=True,
+        max_context_window=1000,
+        complexity_min=1,
+        complexity_max=10,
+    )
+
+    # Setup servers: a large-window flash server and a too-small one.
+    # The small flash server must be excluded on overflow retry because the
+    # request already exceeded the context window.
+    Server.objects.create(
+        model_id=flash_model.id,
+        base_url="http://flash-small.example",
+        is_online=True,
+        context_window=1000,
+    )
+    flash_server = Server.objects.create(
+        model_id=flash_model.id,
+        base_url="http://flash-large.example",
+        is_online=True,
+        context_window=100000,
+    )
+    Server.objects.create(model_id=other_model.id, base_url="http://other.example", is_online=True)
+
+    # Mock routing LLM to return other_model for 'auto'
+    def fake_query_routing_llm(self, body, record, context, active_models, model_names):
+        return other_model, "router_decision"
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm._query_routing_llm", fake_query_routing_llm)
+
+    contacted = []
+    def fake_request(self_inner, method, url, **kwargs):
+        upstream = MagicMock()
+        if "other.example" in url:
+            upstream.status_code = 400
+            upstream.reason = "Bad Request"
+            upstream.content = b'{"error": {"message": "context window 1000 exceeded"}}'
+        else:
+            contacted.append(url)
+            upstream.status_code = 200
+            upstream.reason = "OK"
+            upstream.content = b'{"choices": [{"message": {"content": "flash response"}}]}'
+        upstream.headers = {"content-type": "application/json"}
+        return upstream
+
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    client = Client()
+    # Body large enough that the small flash server (context_window=1000) is excluded.
+    response = client.post(
+        "/v1/chat/completions",
+        data=json.dumps({
+            "model": "auto",
+            "messages": [{"role": "user", "content": "hello" * 2000}],
+        }),
+        content_type="application/json",
+        HTTP_X_FORWARDED_FOR="1.2.3.4",
+    )
+
+    assert response.status_code == 200
+    assert b"flash response" in response.content
+    # The flash fallback must only contact the large-window server, never the
+    # too-small one that was below the estimate.
+    assert contacted, "expected the request to be retried on a flash server"
+    assert all("flash-small.example" not in u for u in contacted)
+    assert any("flash-large.example" in u for u in contacted)
