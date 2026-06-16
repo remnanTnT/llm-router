@@ -216,3 +216,21 @@ class CodehubReview(models.Model):
     class Meta:
         managed = False
         db_table = "codehub_review"
+
+
+class ReviewPipeline(models.Model):
+    id = models.AutoField(primary_key=True)
+    project_name = models.CharField(max_length=200)
+    merge_requests_id = models.IntegerField()
+    merge_url = models.TextField()
+    start_time = models.DateTimeField()
+    end_time = models.DateTimeField(blank=True, null=True)
+    expert_model_id = models.IntegerField()
+    reflactor_model_id = models.IntegerField()
+    review_file_num = models.IntegerField(default=0)
+    diff_part_num = models.IntegerField(default=0)
+    review_num = models.IntegerField(default=0)
+
+    class Meta:
+        managed = False
+        db_table = "review_pipeline"
