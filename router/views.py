@@ -123,13 +123,16 @@ def proxy(request, path: str):
 def whitelist_update(request):
     data = _request_data(request)
     employee_no = str(data.get("employee_no", "")).strip()
+    user_name = data.get("user_name")
+    if user_name is not None:
+        user_name = str(user_name).strip()
     try:
         is_allowed = int(data.get("is_allowed"))
     except (TypeError, ValueError):
         return JsonResponse({"code": 400, "error": "is_allowed must be 0 or 1"}, status=400)
     if not employee_no or is_allowed not in (0, 1):
         return JsonResponse({"code": 400, "error": "employee_no and is_allowed are required"}, status=400)
-    row, created, changed = WhitelistRepository.upsert(employee_no, is_allowed)
+    row, created, changed = WhitelistRepository.upsert(employee_no, is_allowed, user_name)
     message = "创建成功" if created else ("更新成功" if changed else "本次修改未生效")
     return JsonResponse(
         {
@@ -137,6 +140,7 @@ def whitelist_update(request):
             "message": message,
             "data": {
                 "employee_no": row.employee_no,
+                "user_name": row.user_name,
                 "is_allowed": row.is_allowed,
                 "update_time": timezone.localtime(row.update_time).strftime("%Y-%m-%d %H:%M:%S") if row.update_time else None,
             },

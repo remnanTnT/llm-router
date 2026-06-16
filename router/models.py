@@ -226,22 +226,48 @@ class CodehubReview(models.Model):
 
     class Meta:
         managed = False
-        db_table = "codehub_review"
+        db_table = "daily_mr_review"
 
 
-class ReviewPipeline(models.Model):
+class ReviewPipeline(TimestampedSoftDeleteModel):
     id = models.AutoField(primary_key=True)
     project_name = models.CharField(max_length=200)
     merge_requests_id = models.IntegerField()
     merge_url = models.TextField()
     start_time = models.DateTimeField()
     end_time = models.DateTimeField(blank=True, null=True)
-    expert_model_id = models.IntegerField()
-    reflactor_model_id = models.IntegerField()
+    duration_seconds = models.IntegerField(blank=True, null=True)
+    expert_model_id = models.IntegerField(blank=True, null=True)
+    reflect_model_id = models.IntegerField(blank=True, null=True)
     review_file_num = models.IntegerField(default=0)
     diff_part_num = models.IntegerField(default=0)
     review_num = models.IntegerField(default=0)
 
     class Meta:
         managed = False
-        db_table = "review_pipeline"
+        db_table = "live_review_requests"
+
+
+class ExistingCodeReview(TimestampedSoftDeleteModel):
+    id = models.AutoField(primary_key=True)
+    project_id = models.IntegerField()
+    project_name = models.CharField(max_length=200)
+    branch_name = models.CharField(max_length=200)
+    scan_commit_id = models.CharField(max_length=100)
+    scan_date = models.DateTimeField()
+    completion_date = models.DateTimeField(blank=True, null=True)
+    relative_path = models.CharField(max_length=500)
+    line = models.IntegerField()
+    issue_description = models.TextField()
+    severity = models.CharField(max_length=50)
+    issue_category = models.CharField(max_length=200)
+    module = models.CharField(max_length=200)
+    first_level_confirmer = models.CharField(max_length=200, blank=True, null=True)
+    second_level_confirmer = models.CharField(max_length=200, blank=True, null=True)
+    is_modified = models.BooleanField(default=False)
+    is_valid_issue = models.BooleanField(default=False)
+    notes = models.TextField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = "codehub_review"
