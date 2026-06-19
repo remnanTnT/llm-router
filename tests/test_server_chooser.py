@@ -143,6 +143,95 @@ def test_prefix_cache_high_match_chooses_least_loaded_cached_server():
     assert context.last_match == 102
 
 
+def test_prefix_cache_overloaded_cached_server_falls_back_to_least_loaded():
+    chooser = PrefixCachePrebleServerChooser(
+        lambda targets: {"http://10.0.0.1:8000": 8, "http://10.0.0.2:8000": 0, "http://10.0.0.3:8000": 1},
+        prefix_block_chars=1,
+    )
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000"),
+        make_server(2, "http://10.0.0.2:8000"),
+        make_server(3, "http://10.0.0.3:8000"),
+    ]
+    cached_body = make_body([str(i) for i in range(100)])
+    chooser.on_response(candidates[0], make_context(cached_body, request_id=101), 200)
+
+    context = make_context(make_body([str(i) for i in range(99)] + ["new"]))
+    selected = chooser.choose(candidates, context, set())
+
+    # Cached server 1 (workload 8) is overloaded vs min 0 (gap 8 >= 4 and 8 >= 0*2),
+    # so fall back to the least loaded server 2.
+    assert selected.id == 2
+
+
+def test_prefix_cache_ratio_zero_on_overload_fallback_to_uncached_server():
+    # Overload fallback selects a server with no cache entry; ratio must be 0.0.
+    chooser = PrefixCachePrebleServerChooser(
+        lambda targets: {"http://10.0.0.1:8000": 8, "http://10.0.0.2:8000": 0, "http://10.0.0.3:8000": 1},
+        prefix_block_chars=1,
+    )
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000"),
+        make_server(2, "http://10.0.0.2:8000"),
+        make_server(3, "http://10.0.0.3:8000"),
+    ]
+    cached_body = make_body([str(i) for i in range(100)])
+    chooser.on_response(candidates[0], make_context(cached_body, request_id=101), 200)
+
+    context = make_context(make_body([str(i) for i in range(99)] + ["new"]))
+    selected = chooser.choose(candidates, context, set())
+
+    assert selected.id == 2
+    assert context.prefix_cache == 0.0
+    assert context.last_match is None
+
+
+def test_prefix_cache_keeps_cached_server_when_workload_gap_below_threshold():
+    # gap >= threshold but ratio below threshold: keep cached server.
+    chooser = PrefixCachePrebleServerChooser(
+        lambda targets: {"http://10.0.0.1:8000": 10, "http://10.0.0.2:8000": 6, "http://10.0.0.3:8000": 7},
+        prefix_block_chars=1,
+        overload_workload_gap=4,
+        overload_workload_ratio=2.0,
+    )
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000"),
+        make_server(2, "http://10.0.0.2:8000"),
+        make_server(3, "http://10.0.0.3:8000"),
+    ]
+    cached_body = make_body([str(i) for i in range(100)])
+    chooser.on_response(candidates[0], make_context(cached_body, request_id=101), 200)
+
+    context = make_context(make_body([str(i) for i in range(99)] + ["new"]))
+    selected = chooser.choose(candidates, context, set())
+
+    # Cached server 1 (workload 10) vs min 6: gap 4 >= 4 but 10 < 6*2 -> not overloaded.
+    assert selected.id == 1
+
+
+def test_prefix_cache_keeps_cached_server_when_workload_ratio_below_threshold():
+    # ratio >= threshold but gap below threshold: keep cached server.
+    chooser = PrefixCachePrebleServerChooser(
+        lambda targets: {"http://10.0.0.1:8000": 3, "http://10.0.0.2:8000": 1, "http://10.0.0.3:8000": 2},
+        prefix_block_chars=1,
+        overload_workload_gap=4,
+        overload_workload_ratio=2.0,
+    )
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000"),
+        make_server(2, "http://10.0.0.2:8000"),
+        make_server(3, "http://10.0.0.3:8000"),
+    ]
+    cached_body = make_body([str(i) for i in range(100)])
+    chooser.on_response(candidates[0], make_context(cached_body, request_id=101), 200)
+
+    context = make_context(make_body([str(i) for i in range(99)] + ["new"]))
+    selected = chooser.choose(candidates, context, set())
+
+    # Cached server 1 (workload 3) vs min 1: 3 >= 1*2 but gap 2 < 4 -> not overloaded.
+    assert selected.id == 1
+
+
 def test_prefix_cache_medium_match_chooses_least_loaded_overall_server():
     chooser = PrefixCachePrebleServerChooser(
         lambda targets: {"http://10.0.0.1:8000": 0, "http://10.0.0.2:8000": 1, "http://10.0.0.3:8000": 0},

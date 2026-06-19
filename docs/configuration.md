@@ -44,7 +44,7 @@ prefix_cache:
   primary_match_threshold: 0.9
   secondary_match_threshold: 0.5
   max_prefix_chars: 1000000
-  prefix_block_chars: 8
+  prefix_block_chars: 128
   redis:
     host: localhost
     port: 6379

@@ -44,8 +44,12 @@ class LeastConnectionServerChooser:
             return None
         load_counts = self._load_counts(available)
         self._log_connection_counts(available, load_counts)
-        min_count = min(load_counts.get(server.id, 0) for server in available)
-        least_loaded = [server for server in available if load_counts.get(server.id, 0) == min_count]
+        return self._pick_least_loaded(available, load_counts)
+
+    @staticmethod
+    def _pick_least_loaded(servers: Sequence[Any], load_counts: dict[int, int]) -> Any:
+        min_count = min(load_counts.get(server.id, 0) for server in servers)
+        least_loaded = [server for server in servers if load_counts.get(server.id, 0) == min_count]
         return random.choice(least_loaded)
 
     def _load_counts(self, available: Sequence[Any]) -> dict[int, int]:

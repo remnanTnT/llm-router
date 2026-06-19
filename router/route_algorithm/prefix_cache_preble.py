@@ -24,6 +24,7 @@ class _PrefixMatch:
     best_match_request_id: Any = None
     cached_matches: list[Any] = field(default_factory=list)
     server_match_ratios: dict[int, float] = field(default_factory=dict)
+    server_match_request_ids: dict[int, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -44,11 +45,23 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         secondary_match_threshold: float | None = None,
         max_prefix_chars: int | None = None,
         prefix_block_chars: int | None = None,
+        overload_workload_gap: int | None = None,
+        overload_workload_ratio: float | None = None,
     ):
         super().__init__(count_provider)
         prefix_config = APP_CONFIG.get("prefix_cache", {})
         self.primary_match_threshold = self._float_setting(primary_match_threshold, prefix_config.get("primary_match_threshold"), 0.9)
         self.secondary_match_threshold = self._float_setting(secondary_match_threshold, prefix_config.get("secondary_match_threshold"), 0.5)
+        self.overload_workload_gap = self._int_setting(
+            overload_workload_gap,
+            prefix_config.get("overload_workload_gap"),
+            4,
+        )
+        self.overload_workload_ratio = self._float_setting(
+            overload_workload_ratio,
+            prefix_config.get("overload_workload_ratio"),
+            2.0,
+        )
         self.max_prefix_chars = self._positive_int_setting(
             max_prefix_chars,
             prefix_config.get("max_prefix_chars"),
@@ -57,7 +70,7 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         self.prefix_block_chars = self._positive_int_setting(
             prefix_block_chars,
             prefix_config.get("prefix_block_chars"),
-            8,
+            128,
         )
         self._ensure_redis()
 
@@ -100,14 +113,27 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         available_by_id = {server.id: server for server in available}
         prefix_data = self._get_prefix_hashes(request_chars)
         if not prefix_data:
+            self._clear_prefix_context(context)
             return self._choose_least_loaded(available)
 
         cached_values = self._read_cached_prefixes(model_key, prefix_data)
         match = self._collect_prefix_matches(cached_values, prefix_data, request_chars, available_by_id)
         self._log_prefix_matches(model_key, available, match)
-        context.prefix_cache = match.best_match_ratio
-        context.last_match = match.best_match_request_id
-        return self._choose_from_prefix_match(available, match)
+        selected = self._choose_from_prefix_match(available, match)
+        self._apply_selected_prefix_context(context, selected, match)
+        return selected
+
+    def _apply_selected_prefix_context(
+        self,
+        context: ServerSelectionContext,
+        selected: Any,
+        match: _PrefixMatch,
+    ) -> None:
+        if selected is None:
+            self._clear_prefix_context(context)
+            return
+        context.prefix_cache = match.server_match_ratios.get(selected.id, 0.0)
+        context.last_match = match.server_match_request_ids.get(selected.id)
 
     @staticmethod
     def _clear_prefix_context(context: ServerSelectionContext) -> None:
@@ -169,8 +195,10 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         valid_servers = self._valid_servers_for_prefix(
             servers_data,
             match_ratio,
+            request_id,
             available_by_id,
             match.server_match_ratios,
+            match.server_match_request_ids,
             now_ts,
         )
         if not valid_servers.found:
@@ -185,8 +213,10 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
         self,
         servers_data: dict[str, float],
         match_ratio: float,
+        request_id: Any,
         available_by_id: dict[int, Any],
         server_match_ratios: dict[int, float],
+        server_match_request_ids: dict[int, Any],
         now_ts: float,
     ) -> _ValidPrefixServers:
         valid_servers = _ValidPrefixServers()
@@ -197,6 +227,7 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             valid_servers.found = True
             if match_ratio > server_match_ratios.get(server_id, 0.0):
                 server_match_ratios[server_id] = match_ratio
+                server_match_request_ids[server_id] = request_id
             if match_ratio > self.primary_match_threshold:
                 server = available_by_id.get(server_id)
                 if server:
@@ -217,15 +248,28 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
             )
 
     def _choose_from_prefix_match(self, available: Sequence[Any], match: _PrefixMatch):
-        if match.cached_matches:
-            return self._choose_least_loaded(match.cached_matches)
-        secondary_matches = [
+        cached_matches = match.cached_matches or [
             server for server in available
             if match.server_match_ratios.get(server.id, 0.0) > self.secondary_match_threshold
         ]
-        if secondary_matches:
-            return self._choose_least_loaded(secondary_matches)
-        return self._choose_least_loaded(available)
+        if not cached_matches:
+            return self._choose_least_loaded(available)
+
+        load_counts = self._load_counts(available)
+        cached = self._pick_least_loaded(cached_matches, load_counts)
+        cached_load = load_counts.get(cached.id, 0)
+        min_load = min(load_counts.get(server.id, 0) for server in available)
+        if self._is_overloaded(cached_load, min_load):
+            logger.info(
+                "[PrefixCachePreble] cached server_id=%s workload=%d exceeds min=%d; "
+                "falling back to least loaded server",
+                cached.id, cached_load, min_load,
+            )
+            return self._pick_least_loaded(available, load_counts)
+        return cached
+
+    def _is_overloaded(self, workload: int, minimum: int) -> bool:
+        return workload - minimum >= self.overload_workload_gap and workload >= minimum * self.overload_workload_ratio
 
     def on_response(self, server: Any, context: ServerSelectionContext, status_code: int) -> None:
         if not 200 <= status_code < 300 or self._redis_client is None:
