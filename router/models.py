@@ -271,3 +271,46 @@ class CodehubReview(TimestampedSoftDeleteModel):
     class Meta:
         managed = False
         db_table = "codehub_review"
+
+
+class AiAssistantUserFeedback(TimestampedSoftDeleteModel):
+    DOMAIN_CHOICES = [
+        ("知识管理", "知识管理"),
+        ("辅助设计", "辅助设计"),
+        ("代码分析", "代码分析"),
+        ("问题定位", "问题定位"),
+        ("Agent", "Agent"),
+    ]
+
+    PRIORITY_CHOICES = [
+        ("高", "高"),
+        ("中", "中"),
+        ("低", "低"),
+    ]
+
+    STATUS_CHOICES = [
+        ("open", "open"),
+        ("close", "close"),
+        ("cancel", "cancel"),
+    ]
+
+    id = models.AutoField(primary_key=True)
+    domain = models.CharField(max_length=50, choices=DOMAIN_CHOICES)
+    tool_version = models.CharField(max_length=100, blank=True, null=True)
+    issue_description = models.TextField()
+    reporter = models.CharField(max_length=200)
+    reported_at = models.DateTimeField()
+    priority = models.CharField(
+        max_length=20, choices=PRIORITY_CHOICES, blank=True, null=True
+    )
+    assignee = models.CharField(max_length=200, blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    estimated_resolution_at = models.DateTimeField(blank=True, null=True)
+    actual_resolution_at = models.DateTimeField(blank=True, null=True)
+    bugfix_version = models.CharField(max_length=100, blank=True, null=True)
+    progress_tracking = models.TextField(blank=True, null=True)
+    remarks = models.TextField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = "ai_assistant_user_feedback"

@@ -1055,3 +1055,84 @@ def update_concurrent_multiplier(request):
             })
         except Exception as e:
             return JsonResponse({"code": 500, "error": f"update failed: {str(e)}"}, status=500)
+
+
+@require_http_methods(["POST"])
+def create_ai_assistant_user_feedback(request):
+    import json
+    from datetime import datetime
+    from router.models import AiAssistantUserFeedback
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # Required fields validation
+    required_fields = ["domain", "issue_description", "reporter", "reported_at", "status"]
+    for field in required_fields:
+        if field not in data or not data[field]:
+            return _bad_request(f"{field} is required")
+
+    # Validate that all keys in data match model fields
+    valid_fields = {f.name for f in AiAssistantUserFeedback._meta.fields if f.name not in ["id"]}
+    extra_fields = set(data.keys()) - valid_fields
+    if extra_fields:
+        return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
+
+    # Validate domain
+    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+    if data["domain"] not in valid_domains:
+        return _bad_request(f"domain must be one of: {', '.join(valid_domains)}")
+
+    # Validate priority (optional)
+    if "priority" in data and data["priority"] is not None:
+        valid_priorities = ["高", "中", "低"]
+        if data["priority"] not in valid_priorities:
+            return _bad_request(f"priority must be one of: {', '.join(valid_priorities)}")
+
+    # Validate status
+    valid_statuses = ["open", "close", "cancel"]
+    if data["status"] not in valid_statuses:
+        return _bad_request(f"status must be one of: {', '.join(valid_statuses)}")
+
+    # Process datetime fields
+    processed_data = {}
+    datetime_fields = ["reported_at", "estimated_resolution_at", "actual_resolution_at", "created_at", "updated_at", "deleted_at"]
+    for key, value in data.items():
+        if key in datetime_fields:
+            if value:
+                try:
+                    # Support multiple datetime formats
+                    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                        try:
+                            dt = datetime.strptime(value, fmt)
+                            processed_data[key] = timezone.make_aware(dt, timezone.get_current_timezone())
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        return _bad_request(f"{key} format invalid, expected format: YYYY-MM-DD HH:MM:SS")
+                except Exception as e:
+                    return _bad_request(f"{key} conversion failed: {str(e)}")
+            else:
+                processed_data[key] = None
+        else:
+            processed_data[key] = value
+
+    # Set timestamps if not provided
+    now = timezone.now()
+    if "created_at" not in processed_data or not processed_data["created_at"]:
+        processed_data["created_at"] = now
+    if "updated_at" not in processed_data or not processed_data["updated_at"]:
+        processed_data["updated_at"] = now
+
+    try:
+        feedback = AiAssistantUserFeedback.objects.create(**processed_data)
+        return JsonResponse({
+            "code": 200,
+            "message": "created",
+            "data": {"id": feedback.id}
+        })
+    except Exception as e:
+        return JsonResponse({"code": 500, "error": str(e)}, status=500)
