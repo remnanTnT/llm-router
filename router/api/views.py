@@ -774,10 +774,10 @@ def mr_live_review_stats_by_date(request):
 
 
 @require_http_methods(["POST"])
-def create_codehub_review(request):
+def create_daily_mr_review(request):
     import json
-    from router.models import CodehubReview
-    from router.repositories.codehub_review import CodehubReviewRepository
+    from router.models import DailyMrReview
+    from router.repositories.codehub_review import DailyMrReviewRepository
 
     try:
         data = json.loads(request.body)
@@ -785,7 +785,7 @@ def create_codehub_review(request):
         return _bad_request("invalid JSON body")
 
     # Validate that all keys in data match model fields
-    valid_fields = {f.name for f in CodehubReview._meta.fields}
+    valid_fields = {f.name for f in DailyMrReview._meta.fields}
     extra_fields = set(data.keys()) - valid_fields
     if extra_fields:
         return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
@@ -794,11 +794,151 @@ def create_codehub_review(request):
     if not issue_hash:
         return _bad_request("issue_hash is required")
 
-    if CodehubReviewRepository.exists_by_hash(issue_hash):
+    if DailyMrReviewRepository.exists_by_hash(issue_hash):
         return JsonResponse({"code": 200, "message": "skipped", "data": {"issue_hash": issue_hash}})
 
     try:
-        review = CodehubReviewRepository.create(data)
+        review = DailyMrReviewRepository.create(data)
+        return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
+    except Exception as e:
+        return JsonResponse({"code": 500, "error": str(e)}, status=500)
+
+
+@require_http_methods(["POST"])
+def create_live_review_request(request):
+    import json
+    from datetime import datetime
+    from router.models import LiveReviewRequest, Model
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # Required fields validation
+    required_fields = ["project_name", "merge_requests_id", "merge_url", "start_time"]
+    for field in required_fields:
+        if field not in data or not data[field]:
+            return _bad_request(f"{field} is required")
+
+    # Validate that all keys in data match model fields (excluding auto fields)
+    valid_fields = {f.name for f in LiveReviewRequest._meta.fields if f.name not in ["id", "created_at", "updated_at", "deleted_at", "duration_seconds"]}
+    extra_fields = set(data.keys()) - valid_fields
+    if extra_fields:
+        return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
+
+    # Process model_id fields (convert from model_name string to model_id)
+    warnings = []
+    processed_data = {}
+
+    for key, value in data.items():
+        if key in ["expert_model_id", "reflect_model_id"]:
+            if value:
+                # Value is a model_name string, need to convert to model_id
+                try:
+                    model = Model.objects.get(model_name=value)
+                    processed_data[key] = model.id
+                except Model.DoesNotExist:
+                    processed_data[key] = None
+                    warnings.append(f"{key}: model_name '{value}' 在现有数据库中不存在")
+            else:
+                processed_data[key] = None
+        elif key in ["start_time", "end_time"]:
+            # Convert time string to datetime object
+            if value:
+                try:
+                    # Support multiple datetime formats
+                    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                        try:
+                            dt = datetime.strptime(value, fmt)
+                            processed_data[key] = timezone.make_aware(dt, timezone.get_current_timezone())
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        return _bad_request(f"{key} format invalid, expected format: YYYY-MM-DD HH:MM:SS")
+                except Exception as e:
+                    return _bad_request(f"{key} conversion failed: {str(e)}")
+            else:
+                processed_data[key] = None
+        else:
+            processed_data[key] = value
+
+    # Calculate duration_seconds from start_time and end_time
+    if processed_data.get("start_time") and processed_data.get("end_time"):
+        time_delta = processed_data["end_time"] - processed_data["start_time"]
+        processed_data["duration_seconds"] = int(time_delta.total_seconds())
+    else:
+        processed_data["duration_seconds"] = None
+
+    # Set timestamps
+    now = timezone.now()
+    processed_data["created_at"] = now
+    processed_data["updated_at"] = now
+
+    try:
+        review_pipeline = LiveReviewRequest.objects.create(**processed_data)
+        response_data = {
+            "code": 200,
+            "message": "created",
+            "data": {"id": review_pipeline.id}
+        }
+        if warnings:
+            response_data["warnings"] = warnings
+        return JsonResponse(response_data)
+    except Exception as e:
+        return JsonResponse({"code": 500, "error": str(e)}, status=500)
+
+
+@require_http_methods(["POST"])
+def upsert_codehub_review(request):
+    import json
+    from datetime import datetime
+    from router.models import CodehubReview
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # Validate that all keys in data match model fields
+    valid_fields = {f.name for f in CodehubReview._meta.fields if f.name != "id"}
+    extra_fields = set(data.keys()) - valid_fields
+    if extra_fields:
+        return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
+
+    # Process datetime fields
+    processed_data = {}
+    for key, value in data.items():
+        if key in ["scan_date", "completion_date", "created_at", "updated_at", "deleted_at"]:
+            if value:
+                try:
+                    # Support multiple datetime formats
+                    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                        try:
+                            dt = datetime.strptime(value, fmt)
+                            processed_data[key] = timezone.make_aware(dt, timezone.get_current_timezone())
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        return _bad_request(f"{key} format invalid, expected format: YYYY-MM-DD HH:MM:SS")
+                except Exception as e:
+                    return _bad_request(f"{key} conversion failed: {str(e)}")
+            else:
+                processed_data[key] = None
+        else:
+            processed_data[key] = value
+
+    # Create a new record
+    now = timezone.now()
+    if "created_at" not in processed_data:
+        processed_data["created_at"] = now
+    if "updated_at" not in processed_data:
+        processed_data["updated_at"] = now
+
+    try:
+        review = CodehubReview.objects.create(**processed_data)
         return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
     except Exception as e:
         return JsonResponse({"code": 500, "error": str(e)}, status=500)
@@ -830,3 +970,88 @@ def _parse_pagination(request, default_page_size: int = 10, max_page_size: int =
         return None, None, f"page_size must be <= {max_page_size}"
 
     return page, page_size, None
+
+
+@require_http_methods(["POST"])
+def update_concurrent_multiplier(request):
+    from router.repositories.ips import IPRepository
+    from router.repositories.user_ips import UserIPRepository
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # 获取参数
+    employee_no = data.get("employee_no")
+    ip = data.get("ip")
+    concurrent_multiplier = data.get("concurrent_multiplier")
+
+    # 验证必须提供employee_no或ip其中之一
+    if not employee_no and not ip:
+        return _bad_request("employee_no or ip is required")
+
+    if employee_no and ip:
+        return _bad_request("only one of employee_no or ip should be provided")
+
+    # 验证concurrent_multiplier
+    if concurrent_multiplier is None:
+        return _bad_request("concurrent_multiplier is required")
+
+    try:
+        multiplier_value = float(concurrent_multiplier)
+    except (TypeError, ValueError):
+        return _bad_request("concurrent_multiplier must be a number")
+
+    if multiplier_value < 1:
+        return _bad_request("concurrent_multiplier must be >= 1")
+
+    # 处理employee_no
+    if employee_no:
+        employee_no = str(employee_no).strip()
+        if not employee_no:
+            return _bad_request("employee_no cannot be empty")
+
+        user_ip = UserIPRepository.get_by_employee_no(employee_no)
+        if not user_ip:
+            return JsonResponse({"code": 404, "error": "employee_no not found"}, status=404)
+
+        if user_ip.ip_id is None:
+            return JsonResponse({"code": 404, "error": "ip_id not found for this employee"}, status=404)
+
+        try:
+            ip_obj = IPRepository.update_concurrent_multiplier(user_ip.ip_id, multiplier_value)
+            return JsonResponse({
+                "code": 200,
+                "message": "更新成功",
+                "data": {
+                    "employee_no": user_ip.employee_no,
+                    "ip": ip_obj.ip,
+                    "concurrent_multiplier": ip_obj.concurrent_multiplier,
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"code": 500, "error": f"update failed: {str(e)}"}, status=500)
+
+    # 处理ip
+    if ip:
+        ip = str(ip).strip()
+        if not ip:
+            return _bad_request("ip cannot be empty")
+
+        ip_obj = IPRepository.get_by_ip(ip)
+        if not ip_obj:
+            return JsonResponse({"code": 404, "error": "ip not found"}, status=404)
+
+        try:
+            ip_obj = IPRepository.update_concurrent_multiplier(ip_obj.id, multiplier_value)
+            return JsonResponse({
+                "code": 200,
+                "message": "更新成功",
+                "data": {
+                    "ip": ip_obj.ip,
+                    "concurrent_multiplier": ip_obj.concurrent_multiplier,
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"code": 500, "error": f"update failed: {str(e)}"}, status=500)

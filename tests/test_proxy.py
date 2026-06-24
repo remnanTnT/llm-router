@@ -6,7 +6,7 @@ from django.test import Client
 from django.utils import timezone
 
 from router.config import APP_CONFIG
-from router.models import IP, Model, RequestRecord, Server
+from router.models import Ips, Model, RequestRecord, Server
 from router.route_algorithm.auto import AutoRouteAlgorithm
 from router.route_algorithm.base import ServerSelectionContext
 from router.repositories.requests import LLM_CHOOSING_IP_ID
@@ -1077,7 +1077,7 @@ def test_model_auto_flag_keeps_original_model_on_vip_channel(monkeypatch):
     Server.objects.create(model_id=target_model.id, base_url="http://target.example", is_online=True)
     Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
     monkeypatch.setitem(APP_CONFIG.setdefault("server", {}), "vip_port", 8008)
-    IP.objects.create(ip="10.10.10.12", concurrent_multiplier=1.0, vip=True)
+    Ips.objects.create(ip="10.10.10.12", concurrent_multiplier=1.0, vip=True)
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("routing request should not be sent for concrete VIP model requests")

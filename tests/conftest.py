@@ -10,56 +10,57 @@ from django.db import connection
 
 django.setup()
 
-from router.models import IP, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, CodehubReview
+from router.models import Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP
 
 
 @pytest.fixture(scope="session", autouse=True)
-def api_test_tables():
-    existing_tables = connection.introspection.table_names()
-    with connection.schema_editor() as schema_editor:
-        for model in (IP, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, CodehubReview):
-            if model._meta.db_table not in existing_tables:
-                schema_editor.create_model(model)
-        if IP._meta.db_table in connection.introspection.table_names() and not has_column("ips", "vip"):
-            schema_editor.add_field(IP, IP._meta.get_field("vip"))
-        if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "last_match"):
-            schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("last_match"))
-        if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "final_prefix_cache"):
-            schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("final_prefix_cache"))
-        # Circuit breaker columns
-        for col in ("circuit_state", "consecutive_failures", "last_state_change_at", "cooldown_seconds", "workload"):
-            if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", col):
-                schema_editor.add_field(Server, Server._meta.get_field(col))
-        # VIP columns
-        for col in ("vip", "vip_cooldown"):
-            if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", col):
-                schema_editor.add_field(Server, Server._meta.get_field(col))
-        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "vip"):
-            schema_editor.add_field(Model, Model._meta.get_field("vip"))
-        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "deprecation"):
-            schema_editor.add_field(Model, Model._meta.get_field("deprecation"))
-        # New router fields
-        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "is_routing_model"):
-            schema_editor.add_field(Model, Model._meta.get_field("is_routing_model"))
-        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "auto"):
-            schema_editor.add_field(Model, Model._meta.get_field("auto"))
-        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "max_context_window"):
-            schema_editor.add_field(Model, Model._meta.get_field("max_context_window"))
-        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "complexity_min"):
-            schema_editor.add_field(Model, Model._meta.get_field("complexity_min"))
-        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "complexity_max"):
-            schema_editor.add_field(Model, Model._meta.get_field("complexity_max"))
-        if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "multimodal"):
-            schema_editor.add_field(Model, Model._meta.get_field("multimodal"))
-        if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "router_result"):
-            schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("router_result"))
-        if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "estimate_tokens"):
-            schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("estimate_tokens"))
-        if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "model_choosing_latency"):
-            schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("model_choosing_latency"))
-        if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", "context_window"):
-            schema_editor.add_field(Server, Server._meta.get_field("context_window"))
-    yield
+def api_test_tables(django_db_setup, django_db_blocker):
+    with django_db_blocker.unblock():
+        existing_tables = connection.introspection.table_names()
+        with connection.schema_editor() as schema_editor:
+            for model in (Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP):
+                if model._meta.db_table not in existing_tables:
+                    schema_editor.create_model(model)
+            if Ips._meta.db_table in connection.introspection.table_names() and not has_column("ips", "vip"):
+                schema_editor.add_field(Ips, Ips._meta.get_field("vip"))
+            if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "last_match"):
+                schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("last_match"))
+            if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "final_prefix_cache"):
+                schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("final_prefix_cache"))
+            # Circuit breaker columns
+            for col in ("circuit_state", "consecutive_failures", "last_state_change_at", "cooldown_seconds", "workload"):
+                if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", col):
+                    schema_editor.add_field(Server, Server._meta.get_field(col))
+            # VIP columns
+            for col in ("vip", "vip_cooldown"):
+                if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", col):
+                    schema_editor.add_field(Server, Server._meta.get_field(col))
+            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "vip"):
+                schema_editor.add_field(Model, Model._meta.get_field("vip"))
+            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "deprecation"):
+                schema_editor.add_field(Model, Model._meta.get_field("deprecation"))
+            # New router fields
+            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "is_routing_model"):
+                schema_editor.add_field(Model, Model._meta.get_field("is_routing_model"))
+            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "auto"):
+                schema_editor.add_field(Model, Model._meta.get_field("auto"))
+            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "max_context_window"):
+                schema_editor.add_field(Model, Model._meta.get_field("max_context_window"))
+            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "complexity_min"):
+                schema_editor.add_field(Model, Model._meta.get_field("complexity_min"))
+            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "complexity_max"):
+                schema_editor.add_field(Model, Model._meta.get_field("complexity_max"))
+            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "multimodal"):
+                schema_editor.add_field(Model, Model._meta.get_field("multimodal"))
+            if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "router_result"):
+                schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("router_result"))
+            if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "estimate_tokens"):
+                schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("estimate_tokens"))
+            if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "model_choosing_latency"):
+                schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("model_choosing_latency"))
+            if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", "context_window"):
+                schema_editor.add_field(Server, Server._meta.get_field("context_window"))
+        yield
 
 
 def has_column(table, column):
@@ -71,10 +72,11 @@ def has_column(table, column):
 @pytest.fixture(autouse=True)
 def clean_api_tables(api_test_tables):
     RequestRecord.objects.all().delete()
-    IP.objects.all().delete()
+    Ips.objects.all().delete()
     Server.objects.all().delete()
     Whitelist.objects.all().delete()
     Model.objects.all().delete()
     ServerOperation.objects.all().delete()
     MrLiveReview.objects.all().delete()
-    CodehubReview.objects.all().delete()
+    DailyMrReview.objects.all().delete()
+    UserIP.objects.all().delete()

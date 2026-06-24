@@ -11,6 +11,10 @@ class UserIPRepository:
         return UserIP.objects.filter(ip_id=ip_id, is_valid=True, deleted_at__isnull=True).first()
 
     @staticmethod
+    def get_by_employee_no(employee_no: str) -> UserIP | None:
+        return UserIP.objects.filter(employee_no=employee_no, is_valid=True, deleted_at__isnull=True).first()
+
+    @staticmethod
     def exists_by_ip_id(ip_id: int) -> bool:
         return UserIP.objects.filter(ip_id=ip_id, deleted_at__isnull=True).exists()
 

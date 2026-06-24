@@ -16,7 +16,7 @@ class Command(BaseCommand):
             "servers",
             "server_operations",
             "mr_live_review",
-            "codehub_review",
+            "daily_mr_review",
         }
         with connection.cursor() as cursor:
             existing = set(connection.introspection.table_names(cursor))

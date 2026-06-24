@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from router.models import CodehubReview
+from router.models import DailyMrReview
 
-class CodehubReviewRepository:
+class DailyMrReviewRepository:
     @staticmethod
     def exists_by_hash(issue_hash: str) -> bool:
-        return CodehubReview.objects.filter(issue_hash=issue_hash).exists()
+        return DailyMrReview.objects.filter(issue_hash=issue_hash).exists()
 
     @staticmethod
-    def create(data: dict) -> CodehubReview:
-        return CodehubReview.objects.create(**data)
+    def create(data: dict) -> DailyMrReview:
+        return DailyMrReview.objects.create(**data)
