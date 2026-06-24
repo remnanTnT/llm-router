@@ -776,8 +776,8 @@ def mr_live_review_stats_by_date(request):
 @require_http_methods(["POST"])
 def create_daily_mr_review(request):
     import json
-    from router.models import CodehubReview
-    from router.repositories.codehub_review import CodehubReviewRepository
+    from router.models import DailyMrReview
+    from router.repositories.codehub_review import DailyMrReviewRepository
 
     try:
         data = json.loads(request.body)
@@ -785,7 +785,7 @@ def create_daily_mr_review(request):
         return _bad_request("invalid JSON body")
 
     # Validate that all keys in data match model fields
-    valid_fields = {f.name for f in CodehubReview._meta.fields}
+    valid_fields = {f.name for f in DailyMrReview._meta.fields}
     extra_fields = set(data.keys()) - valid_fields
     if extra_fields:
         return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
@@ -794,11 +794,11 @@ def create_daily_mr_review(request):
     if not issue_hash:
         return _bad_request("issue_hash is required")
 
-    if CodehubReviewRepository.exists_by_hash(issue_hash):
+    if DailyMrReviewRepository.exists_by_hash(issue_hash):
         return JsonResponse({"code": 200, "message": "skipped", "data": {"issue_hash": issue_hash}})
 
     try:
-        review = CodehubReviewRepository.create(data)
+        review = DailyMrReviewRepository.create(data)
         return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
     except Exception as e:
         return JsonResponse({"code": 500, "error": str(e)}, status=500)
@@ -808,7 +808,7 @@ def create_daily_mr_review(request):
 def create_live_review_request(request):
     import json
     from datetime import datetime
-    from router.models import ReviewPipeline, Model
+    from router.models import LiveReviewRequest, Model
 
     try:
         data = json.loads(request.body)
@@ -822,7 +822,7 @@ def create_live_review_request(request):
             return _bad_request(f"{field} is required")
 
     # Validate that all keys in data match model fields (excluding auto fields)
-    valid_fields = {f.name for f in ReviewPipeline._meta.fields if f.name not in ["id", "created_at", "updated_at", "deleted_at", "duration_seconds"]}
+    valid_fields = {f.name for f in LiveReviewRequest._meta.fields if f.name not in ["id", "created_at", "updated_at", "deleted_at", "duration_seconds"]}
     extra_fields = set(data.keys()) - valid_fields
     if extra_fields:
         return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
@@ -877,7 +877,7 @@ def create_live_review_request(request):
     processed_data["updated_at"] = now
 
     try:
-        review_pipeline = ReviewPipeline.objects.create(**processed_data)
+        review_pipeline = LiveReviewRequest.objects.create(**processed_data)
         response_data = {
             "code": 200,
             "message": "created",
@@ -894,7 +894,7 @@ def create_live_review_request(request):
 def upsert_codehub_review(request):
     import json
     from datetime import datetime
-    from router.models import ExistingCodeReview
+    from router.models import CodehubReview
 
     try:
         data = json.loads(request.body)
@@ -902,7 +902,7 @@ def upsert_codehub_review(request):
         return _bad_request("invalid JSON body")
 
     # Validate that all keys in data match model fields
-    valid_fields = {f.name for f in ExistingCodeReview._meta.fields if f.name != "id"}
+    valid_fields = {f.name for f in CodehubReview._meta.fields if f.name != "id"}
     extra_fields = set(data.keys()) - valid_fields
     if extra_fields:
         return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
@@ -938,7 +938,7 @@ def upsert_codehub_review(request):
         processed_data["updated_at"] = now
 
     try:
-        review = ExistingCodeReview.objects.create(**processed_data)
+        review = CodehubReview.objects.create(**processed_data)
         return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
     except Exception as e:
         return JsonResponse({"code": 500, "error": str(e)}, status=500)

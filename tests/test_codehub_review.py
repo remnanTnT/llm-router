@@ -1,7 +1,7 @@
 import pytest
 import json
 from django.test import Client
-from router.models import CodehubReview
+from router.models import DailyMrReview
 
 @pytest.mark.django_db
 def test_create_codehub_review():
@@ -27,13 +27,13 @@ def test_create_codehub_review():
     response = client.post("/api/codehub_review", data=json.dumps(data), content_type="application/json")
     assert response.status_code == 200
     assert response.json()["message"] == "created"
-    assert CodehubReview.objects.filter(issue_hash="hash1").count() == 1
+    assert DailyMrReview.objects.filter(issue_hash="hash1").count() == 1
     
     # Duplicate hash creation
     response = client.post("/api/codehub_review", data=json.dumps(data), content_type="application/json")
     assert response.status_code == 200
     assert response.json()["message"] == "skipped"
-    assert CodehubReview.objects.filter(issue_hash="hash1").count() == 1
+    assert DailyMrReview.objects.filter(issue_hash="hash1").count() == 1
 
 @pytest.mark.django_db
 def test_create_codehub_review_missing_hash():
@@ -58,4 +58,4 @@ def test_create_codehub_review_invalid_fields():
     response = client.post("/api/codehub_review", data=json.dumps(data), content_type="application/json")
     assert response.status_code == 400
     assert "invalid fields: unknown_field" in response.json()["error"]
-    assert CodehubReview.objects.filter(issue_hash="hash_invalid").count() == 0
+    assert DailyMrReview.objects.filter(issue_hash="hash_invalid").count() == 0

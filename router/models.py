@@ -11,7 +11,7 @@ class TimestampedSoftDeleteModel(models.Model):
         abstract = True
 
 
-class IP(TimestampedSoftDeleteModel):
+class Ips(TimestampedSoftDeleteModel):
     ip = models.CharField(max_length=50, unique=True)
     concurrent_multiplier = models.FloatField(default=1.0)
     vip = models.BooleanField(default=False)
@@ -207,7 +207,7 @@ class MrLiveReview(models.Model):
         db_table = "mr_live_review"
 
 
-class CodehubReview(models.Model):
+class DailyMrReview(models.Model):
     id = models.AutoField(primary_key=True)
     project_id = models.IntegerField()
     branch = models.CharField(max_length=200)
@@ -229,7 +229,7 @@ class CodehubReview(models.Model):
         db_table = "daily_mr_review"
 
 
-class ReviewPipeline(TimestampedSoftDeleteModel):
+class LiveReviewRequest(TimestampedSoftDeleteModel):
     id = models.AutoField(primary_key=True)
     project_name = models.CharField(max_length=200)
     merge_requests_id = models.IntegerField()
@@ -248,7 +248,7 @@ class ReviewPipeline(TimestampedSoftDeleteModel):
         db_table = "live_review_requests"
 
 
-class ExistingCodeReview(TimestampedSoftDeleteModel):
+class CodehubReview(TimestampedSoftDeleteModel):
     id = models.AutoField(primary_key=True)
     project_id = models.IntegerField()
     project_name = models.CharField(max_length=200)
