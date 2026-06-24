@@ -10,7 +10,7 @@ from django.db import connection
 
 django.setup()
 
-from router.models import IP, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP
+from router.models import Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -18,11 +18,11 @@ def api_test_tables(django_db_setup, django_db_blocker):
     with django_db_blocker.unblock():
         existing_tables = connection.introspection.table_names()
         with connection.schema_editor() as schema_editor:
-            for model in (IP, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP):
+            for model in (Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP):
                 if model._meta.db_table not in existing_tables:
                     schema_editor.create_model(model)
-            if IP._meta.db_table in connection.introspection.table_names() and not has_column("ips", "vip"):
-                schema_editor.add_field(IP, IP._meta.get_field("vip"))
+            if Ips._meta.db_table in connection.introspection.table_names() and not has_column("ips", "vip"):
+                schema_editor.add_field(Ips, Ips._meta.get_field("vip"))
             if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "last_match"):
                 schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("last_match"))
             if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "final_prefix_cache"):
@@ -72,7 +72,7 @@ def has_column(table, column):
 @pytest.fixture(autouse=True)
 def clean_api_tables(api_test_tables):
     RequestRecord.objects.all().delete()
-    IP.objects.all().delete()
+    Ips.objects.all().delete()
     Server.objects.all().delete()
     Whitelist.objects.all().delete()
     Model.objects.all().delete()

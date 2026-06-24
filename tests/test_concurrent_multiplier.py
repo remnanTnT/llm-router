@@ -4,7 +4,7 @@ import pytest
 from django.test import Client
 from django.utils import timezone
 
-from router.models import IP, UserIP
+from router.models import Ips, UserIP
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def setup_test_data(db):
     now = timezone.now()
 
     # 创建IP记录
-    ip1 = IP.objects.create(
+    ip1 = Ips.objects.create(
         ip="192.168.1.100",
         concurrent_multiplier=1.0,
         vip=False,
@@ -26,7 +26,7 @@ def setup_test_data(db):
         updated_at=now,
     )
 
-    ip2 = IP.objects.create(
+    ip2 = Ips.objects.create(
         ip="192.168.1.101",
         concurrent_multiplier=1.0,
         vip=False,
@@ -72,7 +72,7 @@ def test_update_by_employee_no_success(client, setup_test_data):
     assert data["data"]["concurrent_multiplier"] == 2.5
 
     # 验证数据库中的值已更新
-    ip = IP.objects.get(id=setup_test_data["ip1"].id)
+    ip = Ips.objects.get(id=setup_test_data["ip1"].id)
     assert ip.concurrent_multiplier == 2.5
 
 
@@ -114,7 +114,7 @@ def test_update_by_ip_success(client, setup_test_data):
     assert data["data"]["concurrent_multiplier"] == 3.0
 
     # 验证数据库中的值已更新
-    ip = IP.objects.get(id=setup_test_data["ip2"].id)
+    ip = Ips.objects.get(id=setup_test_data["ip2"].id)
     assert ip.concurrent_multiplier == 3.0
 
 

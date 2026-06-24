@@ -9,7 +9,7 @@ from django.test import Client, RequestFactory
 from django.utils import timezone
 
 from router.config import APP_CONFIG
-from router.models import IP, Model, RequestRecord, Server
+from router.models import Ips, Model, RequestRecord, Server
 from router.repositories.requests import RequestRepository
 from router.repositories.servers import ServerRepository
 from router.services.proxy import ProxyService
@@ -481,7 +481,7 @@ class TestVIPPortIPGate:
         message = "Port 8008 is closed, please use port 8001"
         assert response.status_code == 503
         assert response.json()["error"]["message"] == message
-        assert IP.objects.get(ip="10.10.10.10").vip is False
+        assert Ips.objects.get(ip="10.10.10.10").vip is False
 
         record = RequestRecord.objects.last()
         assert record.status == "503 Service Unavailable"
@@ -491,7 +491,7 @@ class TestVIPPortIPGate:
         server_config = APP_CONFIG.setdefault("server", {})
         monkeypatch.setitem(server_config, "vip_port", 8008)
         monkeypatch.setitem(server_config, "bind", "0.0.0.0:8001")
-        IP.objects.create(ip="10.10.10.11", concurrent_multiplier=1.0, vip=True)
+        Ips.objects.create(ip="10.10.10.11", concurrent_multiplier=1.0, vip=True)
 
         response = Client().post(
             "/v1/chat/completions",

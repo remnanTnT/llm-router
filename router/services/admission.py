@@ -8,7 +8,7 @@ from typing import ClassVar
 from django.utils import timezone
 
 from router.config import APP_CONFIG
-from router.models import IP, Model
+from router.models import Ips, Model
 from router.repositories.departments import DepartmentRepository
 from router.repositories.requests import RequestRepository
 from router.repositories.user_ips import UserIPRepository
@@ -35,7 +35,7 @@ class AdmissionService:
         self.stale_minutes = int(APP_CONFIG.get("proxy", {}).get("stale_processing_minutes", 20))
         self.unknown_model_max_tokens = int(APP_CONFIG.get("proxy", {}).get("unknown_model_max_tokens", 20480))
 
-    def check_permission(self, ip: IP) -> AdmissionResult:
+    def check_permission(self, ip: Ips) -> AdmissionResult:
         user_ip = UserIPRepository.get_by_ip_id(ip.id)
         if not user_ip:
             return AdmissionResult(True) if self.allow_missing_user_info else self._permission_denied()
@@ -63,7 +63,7 @@ class AdmissionService:
             )
         return AdmissionResult(True)
 
-    def check_concurrency(self, ip: IP, model: Model | None, is_auto: bool = False) -> AdmissionResult:
+    def check_concurrency(self, ip: Ips, model: Model | None, is_auto: bool = False) -> AdmissionResult:
         if not model and not is_auto:
             return AdmissionResult(True)
         
