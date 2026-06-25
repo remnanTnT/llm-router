@@ -58,6 +58,8 @@ def api_test_tables(django_db_setup, django_db_blocker):
                 schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("estimate_tokens"))
             if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "model_choosing_latency"):
                 schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("model_choosing_latency"))
+            if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "ttft"):
+                schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("ttft"))
             if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", "context_window"):
                 schema_editor.add_field(Server, Server._meta.get_field("context_window"))
         yield

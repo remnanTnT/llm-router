@@ -124,6 +124,7 @@ def finish_normal_success(
     reason: str,
     target_pod_ip: str | None,
     attempts: int,
+    ttft: int | None = None,
 ) -> None:
     input_tokens, output_tokens, cached_tokens = parse_json_usage(content)
     RequestRepository.finish(
@@ -137,6 +138,7 @@ def finish_normal_success(
         attempt_count=attempts,
         final_prefix_cache=cached_tokens,
         router_result=router_result(context),
+        ttft=ttft,
     )
 
 
@@ -167,6 +169,7 @@ def finish_stream_success(
     model_name: str | None,
     attempts: int,
     context,
+    ttft: int | None = None,
 ) -> None:
     input_tokens, output_tokens, cached_tokens = parse_stream_usage(chunks)
     final_model_id = ensure_model_after_success(model_name, status_code)
@@ -181,6 +184,7 @@ def finish_stream_success(
         attempt_count=attempts,
         final_prefix_cache=cached_tokens,
         router_result=router_result(context),
+        ttft=ttft,
     )
 
 
