@@ -614,10 +614,13 @@ class ProxyService:
         )
 
     def _stream_success(self, django_request, upstream, record, server, model_name, status_code, reason, target_pod_ip, attempts, context, served_as_vip, model):
+        request_start = time.monotonic()
+
         def generate():
             chunks: list[bytes] = []
+            first_chunk_at = None
             try:
-                deadline = time.monotonic() + self.stream_total_timeout
+                deadline = request_start + self.stream_total_timeout
                 for chunk in upstream.iter_content(chunk_size=8192):
                     if time.monotonic() > deadline:
                         yield timeout_sse_event()
@@ -636,9 +639,12 @@ class ProxyService:
                         )
                         return
                     if chunk:
+                        if first_chunk_at is None:
+                            first_chunk_at = time.monotonic()
                         chunks.append(chunk)
                         yield chunk
                 self._notify_chooser_response(server, context, status_code)
+                ttft = int((first_chunk_at - request_start) * 1000) if first_chunk_at is not None else None
                 proxy_response.finish_stream_success(
                     record,
                     status_code,
@@ -648,6 +654,7 @@ class ProxyService:
                     model_name,
                     attempts,
                     context,
+                    ttft,
                 )
             except requests.exceptions.ReadTimeout:
                 yield timeout_sse_event()

@@ -133,6 +133,7 @@ ALTER TABLE requests ADD COLUMN last_match BIGINT NULL;
 ALTER TABLE requests ADD COLUMN router_result VARCHAR(300) NULL;
 ALTER TABLE requests ADD COLUMN estimate_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN model_choosing_latency BIGINT NULL;
+ALTER TABLE requests ADD COLUMN ttft BIGINT NULL;
 ```
 
 `task_status` is one of the request lifecycle states used by the router, including `processing`, `success`, `failed`, `agent_disconnected`, and `incomplete`.
@@ -146,6 +147,8 @@ ALTER TABLE requests ADD COLUMN model_choosing_latency BIGINT NULL;
 `estimate_tokens` stores the fast token estimate from the original request body. It is used for `servers.context_window` filtering.
 
 `model_choosing_latency` stores elapsed milliseconds for model choosing when the request uses true auto selection or small-request routing.
+
+`ttft` stores time-to-first-token in milliseconds. For streaming requests it is measured from the start of the streaming generator to the first non-empty chunk received from the upstream server; for non-streaming requests it is not populated (see `_stream_success` in `proxy.py`).
 
 Internal routing-model calls used to classify auto-routed targets are also recorded in `requests`. These rows use `ip_id = 0`, `user_agent = "llm-choosing"`, `is_stream = FALSE`, and the routing model's `model_id`. Statistics APIs exclude `ip_id = 0` rows.
 

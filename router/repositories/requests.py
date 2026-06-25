@@ -126,6 +126,7 @@ class RequestRepository:
         attempt_count: int | None = None,
         final_prefix_cache: int = 0,
         router_result: str | None = None,
+        ttft: int | None = None,
     ) -> None:
         end_time = timezone.now()
         record.end_time = end_time
@@ -158,6 +159,9 @@ class RequestRepository:
         if attempt_count is not None:
             record.attempt_count = attempt_count
             update_fields.append("attempt_count")
+        if ttft is not None:
+            record.ttft = ttft
+            update_fields.append("ttft")
         record.save(update_fields=update_fields)
 
     @staticmethod

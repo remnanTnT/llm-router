@@ -95,6 +95,7 @@ class RequestRecord(TimestampedSoftDeleteModel):
     send_time = models.DateTimeField()
     end_time = models.DateTimeField(blank=True, null=True)
     latency = models.BigIntegerField(blank=True, null=True)
+    ttft = models.BigIntegerField(blank=True, null=True)
     model_id = models.IntegerField()
     input_token_cnt = models.IntegerField(default=0)
     output_token_cnt = models.IntegerField(default=0)
