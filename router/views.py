@@ -34,8 +34,15 @@ def healthy(request):
     return JsonResponse({"status": "healthy"})
 
 
+_ALLOWED_V1_PATHS = {"chat/completions", "models", "embeddings"}
+
+
 @csrf_exempt
 def proxy(request, path: str):
+    normalized_path = path.rstrip("/")
+    if normalized_path not in _ALLOWED_V1_PATHS:
+        message = f"The endpoint /v1/{normalized_path} is not implemented. Supported endpoints are /v1/chat/completions, /v1/models and /v1/embeddings."
+        return error_response(501, message, "not_implemented")
     user_agent = request.headers.get("User-Agent", "")
     client_ip = _client_ip(request)
     is_vip_channel = _is_vip_channel(request)
@@ -75,7 +82,7 @@ def proxy(request, path: str):
             return error_response(403, message, "version_too_old")
 
         parser = RequestParser(int(APP_CONFIG.get("proxy", {}).get("default_max_tokens", 8528)))
-        parsed = parser.parse(body)
+        parsed = parser.parse(body, path)
         input_model_name = parsed.model_name
         input_is_auto = ModelRepository.is_auto_model_name(input_model_name)
         model = None if input_is_auto else ModelRepository.get_by_name(input_model_name)

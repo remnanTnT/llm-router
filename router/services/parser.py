@@ -21,7 +21,7 @@ class RequestParser:
     def __init__(self, default_max_tokens: int = 8528):
         self.default_max_tokens = default_max_tokens
 
-    def parse(self, body: bytes) -> ParsedRequest:
+    def parse(self, body: bytes, path: str = "") -> ParsedRequest:
         if not body:
             return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=False)
         try:
@@ -40,15 +40,20 @@ class RequestParser:
             return ParsedRequest(body=body, model_name=None, stream=False, max_tokens=None, is_json=True)
 
         stream = bool(data.get("stream"))
-        if stream:
-            options = data.get("stream_options")
-            if not isinstance(options, dict):
-                options = {}
-            options["include_usage"] = True
-            data["stream_options"] = options
 
-        if data.get("max_tokens") is None:
-            data["max_tokens"] = self.default_max_tokens
+        # max_tokens and stream_options are chat-completions parameters. Other
+        # endpoints (e.g. /v1/embeddings) reject unknown fields, so only inject
+        # these defaults for chat-style requests.
+        if not self._is_embeddings_path(path):
+            if stream:
+                options = data.get("stream_options")
+                if not isinstance(options, dict):
+                    options = {}
+                options["include_usage"] = True
+                data["stream_options"] = options
+
+            if data.get("max_tokens") is None:
+                data["max_tokens"] = self.default_max_tokens
 
         max_tokens = self._safe_int(data.get("max_tokens"))
 
@@ -63,6 +68,10 @@ class RequestParser:
             is_json=True,
             estimated_full_body_tokens=estimated_full_body_tokens,
         )
+
+    @staticmethod
+    def _is_embeddings_path(path: str) -> bool:
+        return path.rstrip("/").lower().endswith("embeddings")
 
     @staticmethod
     def _safe_int(value: Any) -> int | None:

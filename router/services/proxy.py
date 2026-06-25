@@ -75,11 +75,16 @@ class ProxyService:
         self.circuit_breaker = CircuitBreakerService()
         self.vip_service = VIPChannelService()
         self.vip_port = int(APP_CONFIG.get("server", {}).get("vip_port", 8008))
+        self._active_chooser = None
 
     def forward(self, django_request, path: str, parsed, ip_id: int | None, model, user_agent: str | None, is_vip_channel: bool = False):
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
         record = self._create_processing_record(ip_id, model, parsed, user_agent)
         append_verbose_request_log(record.id, django_request.body)
+        if path.rstrip("/") == "embeddings":
+            return self._forward_embeddings(
+                django_request, path, headers, record, ip_id, model, parsed, user_agent, is_vip_channel
+            )
         auto_model_selection = self.auto_router.should_auto_select(
             parsed,
             model,
@@ -116,6 +121,12 @@ class ProxyService:
                     int((time.monotonic() - model_choice_started) * 1000),
                 )
 
+        # Non-chat endpoints (e.g. /v1/models) have no routing decision; record
+        # the endpoint path instead. (Embeddings branches off before this point.)
+        normalized = path.rstrip("/")
+        if normalized != "chat/completions":
+            context.router_result = normalized
+
         candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel, estimate_tokens=parsed.estimated_full_body_tokens)
         if served_as_vip:
             record.user_ip_id = 2
@@ -128,6 +139,31 @@ class ProxyService:
             django_request, path, headers, parsed.body, record, user_agent,
             candidates, context, served_as_vip, model, parsed.stream
         )
+
+    def _forward_embeddings(self, django_request, path, headers, record, ip_id, model, parsed, user_agent, is_vip_channel: bool):
+        # Embeddings skip the chat-completions auto-routing algorithm entirely
+        # and select a server by least-connection (random among least-loaded).
+        # The request body is forwarded unchanged (no max_tokens / model rewrite).
+        context = self._selection_context(
+            record, ip_id, model, parsed, path, django_request.method, False
+        )
+        context.router_result = path.rstrip("/")
+        candidates, served_as_vip = self._select_candidates(
+            path, model, is_vip_channel, estimate_tokens=parsed.estimated_full_body_tokens
+        )
+        if served_as_vip:
+            record.user_ip_id = 2
+            record.save(update_fields=["user_ip_id"])
+        if not candidates:
+            return self._handle_no_candidates(record, user_agent, context, model)
+        self._active_chooser = self.auto_router.workload_chooser
+        try:
+            return self._route_with_retry(
+                django_request, path, headers, parsed.body, record, user_agent,
+                candidates, context, served_as_vip, model, parsed.stream
+            )
+        finally:
+            self._active_chooser = None
 
     @staticmethod
     def _create_processing_record(ip_id: int | None, model, parsed, user_agent: str | None):
@@ -211,7 +247,7 @@ class ProxyService:
         state = _RetryState()
         try:
             while state.attempts < self.max_attempts_per_request:
-                server = self.chooser.choose(candidates, context, state.attempted_server_ids)
+                server = self._effective_chooser().choose(candidates, context, state.attempted_server_ids)
                 if server is None:
                     break
 
@@ -712,10 +748,13 @@ class ProxyService:
         except (ImportError, AttributeError, ValueError, TypeError):
             return LeastConnectionServerChooser()
 
+    def _effective_chooser(self):
+        return self._active_chooser or self.chooser
+
     def _notify_chooser_response(self, server, context, status_code: int) -> None:
         if 200 <= status_code < 300:
             self.circuit_breaker.record_success(server)
-        hook = getattr(self.chooser, "on_response", None)
+        hook = getattr(self._effective_chooser(), "on_response", None)
         if not hook:
             return
         try:
