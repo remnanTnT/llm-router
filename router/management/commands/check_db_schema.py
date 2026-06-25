@@ -411,7 +411,10 @@ class Command(BaseCommand):
 
     def _alter_type_sql(self, table, column, expected_type):
         quote_name = connection.ops.quote_name
-        return f"ALTER TABLE {quote_name(table)} ALTER COLUMN {quote_name(column)} TYPE {expected_type};"
+        return (
+            f"ALTER TABLE {quote_name(table)} ALTER COLUMN {quote_name(column)} "
+            f"TYPE {expected_type} USING {quote_name(column)}::{expected_type};"
+        )
 
     def _create_index_sql(self, model, index):
         with connection.schema_editor() as schema_editor:
