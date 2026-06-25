@@ -84,6 +84,7 @@ The range is inclusive. Bucketed endpoints choose granularity automatically: hou
 | `/api/model_request_count_by_period` | GET | `start_time`, `end_time`, `model_name` | | Bucketed successful request count for one model. |
 | `/api/model_ip_count_by_period` | GET | `start_time`, `end_time`, `model_name` | | Bucketed distinct IP count for one model. |
 | `/api/model_latency_boxplot` | GET | `start_time`, `end_time` | `model_names` comma list | Per-model latency boxplot data. Drops latencies above 890 seconds from quartiles and reports their ratio. |
+| `/api/access_stats_by_department` | GET | `start_time`, `end_time` | `dept1`, `dept2`, `dept3`, `dept4`; use `all` or omit for any department | Aggregates successful requests by IP with user and department info. Filters by department levels when provided. |
 
 Example:
 
@@ -357,3 +358,90 @@ curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback \
     "priority": "高"
   }'
 ```
+
+## Access Stats by Department API
+
+```http
+GET /api/access_stats_by_department
+```
+
+Aggregates successful request counts by IP address with associated user and department information. Filters results by department levels when provided.
+
+Query parameters:
+
+- `start_time`: Start time in Beijing timezone (format: `YYYY-MM-DD HH:mm:ss`)
+- `end_time`: End time in Beijing timezone (format: `YYYY-MM-DD HH:mm:ss`)
+- `dept1`: Level 1 department filter (optional; use `all` or omit to include all)
+- `dept2`: Level 2 department filter (optional; use `all` or omit to include all)
+- `dept3`: Level 3 department filter (optional; use `all` or omit to include all)
+- `dept4`: Level 4 department filter (optional; use `all` or omit to include all)
+
+The endpoint performs the following:
+
+1. Queries successful requests (`task_status="success"`) within the time range
+2. Aggregates by `ip_id` to count requests per IP
+3. Joins `ips` table to retrieve IP addresses
+4. Joins `user_ips` table to retrieve user information (`user_name`, `user_charge`, `employee_no`)
+5. Joins `departments` table to retrieve department hierarchy (`dept1`-`dept4`)
+6. Filters results by department parameters when provided
+
+Response format:
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "ip": "192.168.1.100",
+      "access_count": 1520,
+      "user_name": "张三",
+      "user_charge": "产品经理",
+      "employee_no": "EMP001",
+      "dept1": "技术部",
+      "dept2": "研发中心",
+      "dept3": "后端组",
+      "dept4": "平台研发"
+    },
+    {
+      "ip": "192.168.1.101",
+      "access_count": 890,
+      "user_name": "李四",
+      "user_charge": "开发工程师",
+      "employee_no": "EMP002",
+      "dept1": "技术部",
+      "dept2": "研发中心",
+      "dept3": "前端组",
+      "dept4": ""
+    }
+  ],
+  "total": 2,
+  "start_time": "2026-06-24 00:00:00",
+  "end_time": "2026-06-25 23:59:59"
+}
+```
+
+Example - query all departments:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59'
+```
+
+Example - filter by level 1 department:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&dept1=技术部'
+```
+
+Example - filter by multiple department levels:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&dept1=技术部&dept2=研发中心&dept3=后端组'
+```
+
+Notes:
+
+- Department filters use exact matching, not pattern matching
+- Multiple department filters are combined with AND logic
+- Only valid, non-deleted user and department records are included
+- Internal routing requests (`ip_id=0`) are excluded from results
+

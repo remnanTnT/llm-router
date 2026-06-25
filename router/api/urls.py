@@ -33,4 +33,5 @@ urlpatterns = [
     path("codehub_review", views.upsert_codehub_review),
     path("concurrent_multiplier/update", views.update_concurrent_multiplier),
     path("ai_assistant_user_feedback", views.create_ai_assistant_user_feedback),
+    path("access_stats_by_department", views.access_stats_by_department),
 ]

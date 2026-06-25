@@ -393,3 +393,117 @@ class RequestRepository:
             total_output=models.Sum("output_token_cnt")
         )
         return result["total_output"] or 0
+
+    @staticmethod
+    def count_success_by_ip_with_user_info(
+        start: datetime,
+        end: datetime,
+        dept1: str | None = None,
+        dept2: str | None = None,
+        dept3: str | None = None,
+        dept4: str | None = None,
+    ) -> list[dict]:
+        """
+        聚合查询每个IP的成功请求数，关联用户和部门信息。
+
+        Args:
+            start: 开始时间
+            end: 结束时间
+            dept1: 一级部门，"all"表示所有
+            dept2: 二级部门，"all"表示所有
+            dept3: 三级部门，"all"表示所有
+            dept4: 四级部门，"all"表示所有
+
+        Returns:
+            包含ip、access_count、user_name、user_charge、employee_no、dept1-4的字典列表
+        """
+        from router.models import Ips, UserIP, Department
+
+        # 构建基础查询
+        qs = (
+            RequestRepository.external_requests()
+            .filter(
+                send_time__gte=start,
+                send_time__lte=end,
+                task_status="success",
+                ip_id__isnull=False,
+            )
+            .values("ip_id")
+            .annotate(access_count=models.Count("id"))
+        )
+
+        # 获取聚合结果
+        ip_counts = {row["ip_id"]: row["access_count"] for row in qs}
+
+        if not ip_counts:
+            return []
+
+        # 构建关联查询：ips -> user_ips -> departments
+        ip_ids = list(ip_counts.keys())
+
+        # 查询ips表获取ip地址
+        ips_query = Ips.objects.filter(id__in=ip_ids, deleted_at__isnull=True)
+        ips_map = {ip.id: ip.ip for ip in ips_query}
+
+        # 查询user_ips表
+        user_ips_query = UserIP.objects.filter(
+            ip_id__in=ip_ids,
+            is_valid=True,
+            deleted_at__isnull=True
+        ).select_related()
+
+        user_ips_map = {
+            user_ip.ip_id: {
+                "user_name": user_ip.user_name,
+                "user_charge": user_ip.user_charge,
+                "employee_no": user_ip.employee_no,
+                "department_id": user_ip.department_id,
+            }
+            for user_ip in user_ips_query
+        }
+
+        # 获取所有涉及的部门ID
+        dept_ids = [info["department_id"] for info in user_ips_map.values() if info["department_id"]]
+
+        # 查询departments表
+        departments_query = Department.objects.filter(id__in=dept_ids, deleted_at__isnull=True)
+        departments_map = {
+            dept.id: {
+                "dept1": dept.dept1,
+                "dept2": dept.dept2,
+                "dept3": dept.dept3,
+                "dept4": dept.dept4,
+            }
+            for dept in departments_query
+        }
+
+        # 组装结果并应用部门过滤
+        results = []
+        for ip_id, access_count in ip_counts.items():
+            user_info = user_ips_map.get(ip_id, {})
+            department_id = user_info.get("department_id")
+            dept_info = departments_map.get(department_id, {}) if department_id else {}
+
+            # 应用部门过滤条件
+            if dept1 and dept1 != "all" and dept_info.get("dept1") != dept1:
+                continue
+            if dept2 and dept2 != "all" and dept_info.get("dept2") != dept2:
+                continue
+            if dept3 and dept3 != "all" and dept_info.get("dept3") != dept3:
+                continue
+            if dept4 and dept4 != "all" and dept_info.get("dept4") != dept4:
+                continue
+
+            results.append({
+                "ip": ips_map.get(ip_id, ""),
+                "access_count": access_count,
+                "user_name": user_info.get("user_name", ""),
+                "user_charge": user_info.get("user_charge", ""),
+                "employee_no": user_info.get("employee_no", ""),
+                "dept1": dept_info.get("dept1", ""),
+                "dept2": dept_info.get("dept2", ""),
+                "dept3": dept_info.get("dept3", ""),
+                "dept4": dept_info.get("dept4", ""),
+            })
+
+        return results

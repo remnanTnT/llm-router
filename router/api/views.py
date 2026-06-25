@@ -1136,3 +1136,50 @@ def create_ai_assistant_user_feedback(request):
         })
     except Exception as e:
         return JsonResponse({"code": 500, "error": str(e)}, status=500)
+
+
+@require_http_methods(["GET"])
+def access_stats_by_department(request):
+    """
+    根据部门和时间范围查询IP访问统计。
+
+    查询参数：
+    - start_time: 开始时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - dept1: 一级部门（可选，"all"表示所有部门）
+    - dept2: 二级部门（可选，"all"表示所有部门）
+    - dept3: 三级部门（可选，"all"表示所有部门）
+    - dept4: 四级部门（可选，"all"表示所有部门）
+
+    返回：
+    - 按IP聚合的访问统计，包含用户信息和部门信息
+    """
+    parsed = _time_range_or_error(request)
+    if isinstance(parsed, JsonResponse):
+        return parsed
+    start, end = parsed
+
+    # 获取部门参数
+    dept1 = request.GET.get("dept1")
+    dept2 = request.GET.get("dept2")
+    dept3 = request.GET.get("dept3")
+    dept4 = request.GET.get("dept4")
+
+    # 处理部门参数：空字符串或"all"视为查询所有
+    dept1 = None if not dept1 or dept1.strip().lower() == "all" else dept1.strip()
+    dept2 = None if not dept2 or dept2.strip().lower() == "all" else dept2.strip()
+    dept3 = None if not dept3 or dept3.strip().lower() == "all" else dept3.strip()
+    dept4 = None if not dept4 or dept4.strip().lower() == "all" else dept4.strip()
+
+    # 查询数据
+    results = RequestRepository.count_success_by_ip_with_user_info(
+        start, end, dept1, dept2, dept3, dept4
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": results,
+        "total": len(results),
+        "start_time": start.astimezone(BEIJING_TZ).strftime(TIME_FORMAT),
+        "end_time": end.astimezone(BEIJING_TZ).strftime(TIME_FORMAT),
+    })
