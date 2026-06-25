@@ -16,6 +16,9 @@ The database schema is intentionally not owned by Django migrations. Router mode
 - `server_operations`
 - `mr_live_review`
 - `codehub_review`
+- `daily_mr_review`
+- `live_review_requests`
+- `ai_assistant_user_feedback`
 
 ## Timezone
 
@@ -169,7 +172,93 @@ CREATE TABLE server_operations (
 
 `mr_live_review` stores MR review ingestion and reporting data. `discussion_id` must be unique.
 
-`codehub_review` stores CodeHub review issues. `issue_hash` must be unique.
+`codehub_review` stores CodeHub review issues.
+
+## `daily_mr_review` Table
+
+`daily_mr_review` stores daily MR review issues. `issue_hash` must be unique and prevents duplicate issue creation.
+
+```sql
+CREATE TABLE daily_mr_review (
+    id BIGSERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    branch VARCHAR(200) NOT NULL,
+    issue_hash VARCHAR(50) NOT NULL UNIQUE,
+    mr_hash VARCHAR(50) NOT NULL,
+    file_path VARCHAR(500) NOT NULL,
+    line INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    review_comment TEXT NOT NULL,
+    severity VARCHAR(50) NOT NULL,
+    categories VARCHAR(200) NOT NULL,
+    fix_suggestion TEXT NOT NULL,
+    created_at VARCHAR(100) NOT NULL,
+    confidence_score VARCHAR(50) NOT NULL,
+    issue_url TEXT NOT NULL
+);
+```
+
+`issue_hash` is the unique identifier computed from the issue content and location. `mr_hash` links the issue to the merge request. `confidence_score` indicates the review confidence level.
+
+## `live_review_requests` Table
+
+`live_review_requests` stores live review request metadata including project name, merge request details, start/end times, duration, model IDs used for expert and reflect phases, and review statistics.
+
+```sql
+CREATE TABLE live_review_requests (
+    id BIGSERIAL PRIMARY KEY,
+    project_name VARCHAR(200) NOT NULL,
+    merge_requests_id INTEGER NOT NULL,
+    merge_url TEXT NOT NULL,
+    start_time TIMESTAMPTZ NOT NULL,
+    end_time TIMESTAMPTZ NULL,
+    duration_seconds INTEGER NULL,
+    expert_model_id INTEGER NULL,
+    reflect_model_id INTEGER NULL,
+    review_file_num INTEGER NOT NULL DEFAULT 0,
+    diff_part_num INTEGER NOT NULL DEFAULT 0,
+    review_num INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NULL,
+    updated_at TIMESTAMPTZ NULL,
+    deleted_at TIMESTAMPTZ NULL
+);
+```
+
+`expert_model_id` and `reflect_model_id` reference the models table and track which models were used in the two-phase review process. `duration_seconds` is automatically calculated from `start_time` and `end_time`. `review_file_num`, `diff_part_num`, and `review_num` track review coverage statistics.
+
+## `ai_assistant_user_feedback` Table
+
+`ai_assistant_user_feedback` stores user feedback for AI Assistant tool features. The table tracks issue lifecycle from reporting through resolution.
+
+```sql
+CREATE TABLE ai_assistant_user_feedback (
+    id BIGSERIAL PRIMARY KEY,
+    domain VARCHAR(50) NOT NULL,
+    tool_version VARCHAR(100) NULL,
+    issue_description TEXT NOT NULL,
+    reporter VARCHAR(200) NOT NULL,
+    reported_at TIMESTAMPTZ NOT NULL,
+    priority VARCHAR(20) NULL,
+    assignee VARCHAR(200) NULL,
+    status VARCHAR(20) NOT NULL,
+    estimated_resolution_at TIMESTAMPTZ NULL,
+    actual_resolution_at TIMESTAMPTZ NULL,
+    bugfix_version VARCHAR(100) NULL,
+    progress_tracking TEXT NULL,
+    remarks TEXT NULL,
+    created_at TIMESTAMPTZ NULL,
+    updated_at TIMESTAMPTZ NULL,
+    deleted_at TIMESTAMPTZ NULL
+);
+```
+
+`domain` must be one of: `知识管理`, `辅助设计`, `代码分析`, `问题定位`, or `Agent`.
+
+`status` must be one of: `open` (新建), `close` (已关闭), or `cancel` (已取消).
+
+`priority` is optional and must be one of: `高`, `中`, or `低`.
+
+`progress_tracking` is a free-text field for tracking resolution progress and intermediate updates.
 
 The field definitions for these reporting tables are in `router/models.py`; `check_db_schema --dry-run` is the safest way to confirm that a live database matches the current model definitions.
 

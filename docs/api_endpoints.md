@@ -207,4 +207,153 @@ List endpoints:
 POST /api/codehub_review
 ```
 
-Creates a CodeHub review row when `issue_hash` is new. If `issue_hash` already exists, the request is skipped. Payload keys must match `CodehubReview` model fields.
+Creates a CodeHub review row. Payload keys must match `CodehubReview` model fields.
+
+## Daily MR Review API
+
+```http
+POST /api/daily_mr_review
+```
+
+Creates a daily MR review row when `issue_hash` is new. If `issue_hash` already exists, the request is skipped and returns success without modification.
+
+Required fields:
+
+- `project_id`: Project identifier
+- `branch`: Target branch name
+- `issue_hash`: Unique issue identifier computed from content and location
+- `mr_hash`: Merge request identifier
+- `file_path`: File path where the issue was found
+- `line`: Line number
+- `body`: Issue body or code snippet
+- `review_comment`: AI-generated review comment
+- `severity`: Issue severity level
+- `categories`: Issue category labels
+- `fix_suggestion`: Suggested fix
+- `created_at`: Timestamp string when the issue was created
+- `confidence_score`: Review confidence level
+- `issue_url`: URL to the issue
+
+Example:
+
+```bash
+curl -i -X POST http://localhost:8001/api/daily_mr_review \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "project_id": 123,
+    "branch": "main",
+    "issue_hash": "abc123def456",
+    "mr_hash": "mr789",
+    "file_path": "src/utils.py",
+    "line": 42,
+    "body": "def calculate(): return x / y",
+    "review_comment": "Potential division by zero",
+    "severity": "high",
+    "categories": "bug,safety",
+    "fix_suggestion": "Add zero check before division",
+    "created_at": "2026-06-25 10:00:00",
+    "confidence_score": "0.95",
+    "issue_url": "https://gitlab.example.com/issues/123"
+  }'
+```
+
+## Live Review Request API
+
+```http
+POST /api/live_review_requests
+```
+
+Creates a live review request record to track MR review sessions. Model ID fields accept either integer model IDs or model name strings, which are automatically resolved to IDs. `duration_seconds` is automatically calculated from `start_time` and `end_time` when both are provided.
+
+Required fields:
+
+- `project_name`: Project name
+- `merge_requests_id`: Merge request ID
+- `merge_url`: URL to the merge request
+- `start_time`: Review start time (format: `YYYY-MM-DD HH:mm:ss`)
+
+Optional fields:
+
+- `end_time`: Review end time (format: `YYYY-MM-DD HH:mm:ss`)
+- `expert_model_id`: Model ID or name used in expert review phase
+- `reflect_model_id`: Model ID or name used in reflection phase
+- `review_file_num`: Number of files reviewed (default: `0`)
+- `diff_part_num`: Number of diff parts analyzed (default: `0`)
+- `review_num`: Number of review comments generated (default: `0`)
+
+Example with model names:
+
+```bash
+curl -i -X POST http://localhost:8001/api/live_review_requests \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "project_name": "llm-router",
+    "merge_requests_id": 456,
+    "merge_url": "https://gitlab.example.com/project/llm-router/-/merge_requests/456",
+    "start_time": "2026-06-25 09:00:00",
+    "end_time": "2026-06-25 09:15:00",
+    "expert_model_id": "gpt-4",
+    "reflect_model_id": "claude-3-opus",
+    "review_file_num": 5,
+    "diff_part_num": 12,
+    "review_num": 8
+  }'
+```
+
+Example with model IDs:
+
+```bash
+curl -i -X POST http://localhost:8001/api/live_review_requests \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "project_name": "llm-router",
+    "merge_requests_id": 457,
+    "merge_url": "https://gitlab.example.com/project/llm-router/-/merge_requests/457",
+    "start_time": "2026-06-25 10:00:00",
+    "expert_model_id": 1,
+    "reflect_model_id": 2
+  }'
+```
+
+## Concurrent Multiplier Update API
+
+```http
+POST /api/concurrent_multiplier/update
+```
+
+Updates the `concurrent_multiplier` field for an IP address. Requires either `employee_no` or `ip` (not both), and `concurrent_multiplier` (must be >= 1.0).
+
+```bash
+curl -i -X POST http://localhost:8001/api/concurrent_multiplier/update \
+  -H 'Content-Type: application/json' \
+  -d '{"employee_no":"E001","concurrent_multiplier":2.0}'
+```
+
+Or by IP:
+
+```bash
+curl -i -X POST http://localhost:8001/api/concurrent_multiplier/update \
+  -H 'Content-Type: application/json' \
+  -d '{"ip":"192.168.1.100","concurrent_multiplier":1.5}'
+```
+
+## AI Assistant User Feedback API
+
+```http
+POST /api/ai_assistant_user_feedback
+```
+
+Creates an AI Assistant user feedback record. Required fields: `domain` (one of: 知识管理, 辅助设计, 代码分析, 问题定位, Agent), `issue_description`, `reporter`, `reported_at`, `status` (one of: open, close, cancel). Optional fields include `tool_version`, `priority` (高/中/低), `assignee`, `estimated_resolution_at`, `actual_resolution_at`, `bugfix_version`, `progress_tracking`, and `remarks`.
+
+```bash
+curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "domain": "代码分析",
+    "issue_description": "代码分析功能响应缓慢",
+    "reporter": "张三",
+    "reported_at": "2026-06-25 10:00:00",
+    "status": "open",
+    "priority": "高"
+  }'
+```
