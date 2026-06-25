@@ -4,7 +4,7 @@ from router.services.parser import RequestParser
 
 
 def test_parser_injects_stream_options_and_default_max_tokens():
-    parsed = RequestParser(default_max_tokens=8528).parse(b'{"model":"m1","stream":true}')
+    parsed = RequestParser(default_max_tokens=8528).parse(b'{"model":"m1","stream":true}', "chat/completions")
     data = json.loads(parsed.body.decode())
     assert parsed.model_name == "m1"
     assert parsed.stream is True

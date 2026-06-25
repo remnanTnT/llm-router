@@ -41,10 +41,9 @@ class RequestParser:
 
         stream = bool(data.get("stream"))
 
-        # max_tokens and stream_options are chat-completions parameters. Other
-        # endpoints (e.g. /v1/embeddings) reject unknown fields, so only inject
-        # these defaults for chat-style requests.
-        if not self._is_embeddings_path(path):
+        # max_tokens and stream_options are chat-completions parameters, so only
+        # inject these defaults there.
+        if self._is_chat_completions_path(path):
             if stream:
                 options = data.get("stream_options")
                 if not isinstance(options, dict):
@@ -70,8 +69,8 @@ class RequestParser:
         )
 
     @staticmethod
-    def _is_embeddings_path(path: str) -> bool:
-        return path.rstrip("/").lower().endswith("embeddings")
+    def _is_chat_completions_path(path: str) -> bool:
+        return path.rstrip("/").lower() == "chat/completions"
 
     @staticmethod
     def _safe_int(value: Any) -> int | None:

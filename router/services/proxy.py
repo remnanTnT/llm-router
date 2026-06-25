@@ -81,10 +81,20 @@ class ProxyService:
         headers = filter_request_headers(dict(django_request.headers), django_request.method)
         record = self._create_processing_record(ip_id, model, parsed, user_agent)
         append_verbose_request_log(record.id, django_request.body)
-        if path.rstrip("/") == "embeddings":
+        normalized = path.rstrip("/")
+        if normalized == "chat/completions":
+            return self._forward_chat(
+                django_request, path, headers, record, ip_id, model, parsed, user_agent, is_vip_channel
+            )
+        if normalized == "embeddings":
             return self._forward_embeddings(
                 django_request, path, headers, record, ip_id, model, parsed, user_agent, is_vip_channel
             )
+        return self._forward_default(
+            django_request, path, headers, record, ip_id, model, parsed, user_agent, is_vip_channel
+        )
+
+    def _forward_chat(self, django_request, path, headers, record, ip_id, model, parsed, user_agent, is_vip_channel: bool):
         auto_model_selection = self.auto_router.should_auto_select(
             parsed,
             model,
@@ -120,12 +130,6 @@ class ProxyService:
                     record,
                     int((time.monotonic() - model_choice_started) * 1000),
                 )
-
-        # Non-chat endpoints (e.g. /v1/models) have no routing decision; record
-        # the endpoint path instead. (Embeddings branches off before this point.)
-        normalized = path.rstrip("/")
-        if normalized != "chat/completions":
-            context.router_result = normalized
 
         candidates, served_as_vip = self._select_candidates(path, model, is_vip_channel, estimate_tokens=parsed.estimated_full_body_tokens)
         if served_as_vip:
@@ -164,6 +168,26 @@ class ProxyService:
             )
         finally:
             self._active_chooser = None
+
+    def _forward_default(self, django_request, path, headers, record, ip_id, model, parsed, user_agent, is_vip_channel: bool):
+        # Non-chat, non-embeddings endpoints (e.g. /v1/models): no auto-routing;
+        # record the endpoint path as the router_result.
+        context = self._selection_context(
+            record, ip_id, model, parsed, path, django_request.method, False
+        )
+        context.router_result = path.rstrip("/")
+        candidates, served_as_vip = self._select_candidates(
+            path, model, is_vip_channel, estimate_tokens=parsed.estimated_full_body_tokens
+        )
+        if served_as_vip:
+            record.user_ip_id = 2
+            record.save(update_fields=["user_ip_id"])
+        if not candidates:
+            return self._handle_no_candidates(record, user_agent, context, model)
+        return self._route_with_retry(
+            django_request, path, headers, parsed.body, record, user_agent,
+            candidates, context, served_as_vip, model, parsed.stream
+        )
 
     @staticmethod
     def _create_processing_record(ip_id: int | None, model, parsed, user_agent: str | None):
