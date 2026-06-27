@@ -52,7 +52,7 @@ A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one 
   - IP auto-creation on first request; background CMDB lookup for new IPs
   - Permission chain: `user_ips` → `departments.is_allowed` → `whitelist.is_allowed`, with a configurable fallback when user info is missing
   - `check_max_tokens`: rejects when request exceeds model's `max_tokens` (or `unknown_model_max_tokens`)
-  - `check_concurrency`: per-(IP, model) limit using `ceil(model.concurrent_limit × ip.concurrent_multiplier)`; exact `auto` requests use `router.auto_concurrent_limit`; limits triple overnight and on Sunday Beijing time
+  - `check_concurrency`: per-(IP, model) limit using `ceil(model.concurrent_limit × ip.concurrent_multiplier)`; exact `auto` requests use `router.auto_concurrent_limit`; limits are multiplied by 4 overnight (23:00–08:00 Beijing time), from 18:00 on Saturdays, and all day Sunday
   - Auto routing: `model: auto` is case-insensitive; concrete models with `models.auto = TRUE` also enter auto routing on the normal port. Text targets are active models with valid complexity bounds; multimodal targets are active models with `multimodal = TRUE`. See [Auto Routing](docs/auto_routing.md) for the full selection sequence.
 
 - **Opencode Client Compatibility**

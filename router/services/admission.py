@@ -82,11 +82,17 @@ class AdmissionService:
 
         limit = max(1, math.ceil(limit_base * (ip.concurrent_multiplier or 1.0)))
 
-        # Triple concurrency 23:00–08:00 Beijing time every day, or all day Sunday
+        # 4x concurrency 23:00–08:00 Beijing time every day,
+        # Saturdays from 18:00, or all day Sunday
         beijing_time = timezone.localtime()
         wd = beijing_time.weekday()  # Monday=0 ... Sunday=6
-        if beijing_time.hour >= 23 or beijing_time.hour < 8 or wd == 6:
-            limit *= 3
+        if (
+            beijing_time.hour < 8
+            or beijing_time.hour >= 23
+            or (wd == 5 and beijing_time.hour >= 18)
+            or wd == 6
+        ):
+            limit *= 4
 
         current = RequestRepository.count_processing(ip.id, model_id)
 
