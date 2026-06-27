@@ -21,7 +21,7 @@ def make_model(name="m", vip=None, concurrent_limit=100):
     return Model.objects.create(model_name=name, vip=vip, concurrent_limit=concurrent_limit)
 
 
-def make_server(model_id, base_url, *, vip=False, vip_cooldown=None, workload=0, is_online=True):
+def make_server(model_id, base_url, *, vip=False, vip_cooldown=None, workload=0, is_online=True, weight=1):
     return Server.objects.create(
         model_id=model_id,
         base_url=base_url,
@@ -29,6 +29,7 @@ def make_server(model_id, base_url, *, vip=False, vip_cooldown=None, workload=0,
         vip=vip,
         vip_cooldown=vip_cooldown,
         workload=workload,
+        weight=weight,
     )
 
 
@@ -568,3 +569,42 @@ class TestProxyVIPRouting:
         assert expired.vip is False
         assert expired.vip_cooldown is None
         assert expired in candidates  # It should now be back in the normal pool
+
+
+# -------- VIP only serves weight-1 servers --------
+
+
+class TestVIPWeightRestriction:
+    def test_high_weight_servers_excluded_from_vip_candidates(self):
+        m = make_model("m", vip=3)
+        # Three weight-1 normals (above min floor 2) + one weight-3 normal.
+        n1 = make_server(m.id, "http://n1.example", workload=0, weight=1)
+        make_server(m.id, "http://n2.example", workload=2, weight=1)
+        make_server(m.id, "http://n3.example", workload=3, weight=1)
+        heavy = make_server(m.id, "http://heavy.example", workload=0, weight=3)
+
+        candidates, served = VIPChannelService().select_candidates(m)
+
+        heavy.refresh_from_db()
+        n1.refresh_from_db()
+        assert served is True
+        assert candidates == [n1]  # least-loaded weight-1 server promoted
+        assert n1.vip is True
+        assert heavy.vip is False  # never promoted despite zero workload
+
+    def test_scale_down_only_considers_weight_one_vips(self):
+        m = make_model("m", vip=3)
+        v1 = make_server(m.id, "http://v1.example", vip=True, workload=1, weight=1)
+        # A weight-3 server somehow already flagged VIP is invisible to scale-down.
+        heavy = make_server(m.id, "http://heavy.example", vip=True, workload=1, weight=3)
+        for _ in range(4):
+            add_vip_processing(m.id)
+        # vip_set is filtered to [v1]; len(active)==1 -> no cooldown marked.
+
+        VIPChannelService().maybe_scale_down(m)
+
+        v1.refresh_from_db()
+        heavy.refresh_from_db()
+        assert v1.vip_cooldown is None
+        assert heavy.vip_cooldown is None
+

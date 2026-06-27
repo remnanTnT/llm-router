@@ -6,6 +6,16 @@ from typing import Any, Callable, Sequence
 from router.route_algorithm.base import ServerSelectionContext
 
 
+def effective_weight(server: Any) -> int:
+    """Server capacity multiplier. Falls back to 1 for missing/invalid values."""
+    weight = getattr(server, "weight", 1)
+    try:
+        weight = int(weight)
+    except (TypeError, ValueError):
+        weight = 1
+    return weight if weight >= 1 else 1
+
+
 class LeastConnectionServerChooser:
     def __init__(
         self,
@@ -47,9 +57,19 @@ class LeastConnectionServerChooser:
         return self._pick_least_loaded(available, load_counts)
 
     @staticmethod
+    def _normalized_load(server: Any, load_counts: dict[int, int]) -> float:
+        return load_counts.get(server.id, 0) / effective_weight(server)
+
+    @staticmethod
     def _pick_least_loaded(servers: Sequence[Any], load_counts: dict[int, int]) -> Any:
-        min_count = min(load_counts.get(server.id, 0) for server in servers)
-        least_loaded = [server for server in servers if load_counts.get(server.id, 0) == min_count]
+        if not servers:
+            return None
+        min_load = min(LeastConnectionServerChooser._normalized_load(s, load_counts) for s in servers)
+        least_loaded = [
+            server
+            for server in servers
+            if LeastConnectionServerChooser._normalized_load(server, load_counts) == min_load
+        ]
         return random.choice(least_loaded)
 
     def _load_counts(self, available: Sequence[Any]) -> dict[int, int]:
