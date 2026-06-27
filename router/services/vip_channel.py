@@ -6,7 +6,7 @@ from typing import Any
 from router.config import APP_CONFIG
 from router.repositories.requests import RequestRepository
 from router.repositories.servers import ServerRepository
-from router.route_algorithm.least_connection import LeastConnectionServerChooser
+from router.route_algorithm.least_connection import LeastConnectionServerChooser, effective_weight
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,11 @@ class VIPChannelService:
         threshold = getattr(model, "vip", None)
         return threshold is not None and threshold > 0
 
+    def _vip_servers(self, model_id: int, vip: bool, estimate_tokens: int = 0) -> list[Any]:
+        """VIP only serves baseline-capacity (weight == 1) servers."""
+        servers = ServerRepository.list_by_model_id(model_id, vip=vip, estimate_tokens=estimate_tokens)
+        return [s for s in servers if effective_weight(s) == 1]
+
     def select_candidates(self, model, estimate_tokens: int = 0) -> tuple[list[Any], bool]:
         """Pick server candidates for a VIP request and run scale-up.
 
@@ -35,8 +40,8 @@ class VIPChannelService:
         ServerRepository.demote_expired_cooldowns(self.cooldown_seconds, model.id)
 
         threshold = int(model.vip or 0)
-        vip_set = ServerRepository.list_by_model_id(model.id, vip=True, estimate_tokens=estimate_tokens)
-        normal = ServerRepository.list_by_model_id(model.id, vip=False, estimate_tokens=estimate_tokens)
+        vip_set = self._vip_servers(model.id, vip=True, estimate_tokens=estimate_tokens)
+        normal = self._vip_servers(model.id, vip=False, estimate_tokens=estimate_tokens)
 
         if not vip_set:
             if len(normal) > self.min_normal_servers:
@@ -44,8 +49,8 @@ class VIPChannelService:
                 if ServerRepository.promote_to_vip(promoted):
                     return [promoted], True
                 # Lost the race: re-list and continue.
-                vip_set = ServerRepository.list_by_model_id(model.id, vip=True, estimate_tokens=estimate_tokens)
-                normal = ServerRepository.list_by_model_id(model.id, vip=False, estimate_tokens=estimate_tokens)
+                vip_set = self._vip_servers(model.id, vip=True, estimate_tokens=estimate_tokens)
+                normal = self._vip_servers(model.id, vip=False, estimate_tokens=estimate_tokens)
                 if not vip_set:
                     return normal, False
             else:
@@ -78,7 +83,7 @@ class VIPChannelService:
         ServerRepository.demote_expired_cooldowns(self.cooldown_seconds, model.id)
 
         threshold = int(model.vip or 0)
-        vip_set = ServerRepository.list_by_model_id(model.id, vip=True, estimate_tokens=estimate_tokens)
+        vip_set = self._vip_servers(model.id, vip=True, estimate_tokens=estimate_tokens)
         if not vip_set:
             return
 

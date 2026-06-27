@@ -257,19 +257,22 @@ class PrefixCachePrebleServerChooser(LeastConnectionServerChooser):
 
         load_counts = self._load_counts(available)
         cached = self._pick_least_loaded(cached_matches, load_counts)
-        cached_load = load_counts.get(cached.id, 0)
-        min_load = min(load_counts.get(server.id, 0) for server in available)
-        if self._is_overloaded(cached_load, min_load):
+        cached_norm = self._normalized_load(cached, load_counts)
+        min_norm = min(self._normalized_load(server, load_counts) for server in available)
+        if self._is_overloaded(cached_norm, min_norm):
             logger.info(
-                "[PrefixCachePreble] cached server_id=%s workload=%d exceeds min=%d; "
+                "[PrefixCachePreble] cached server_id=%s normalized_load=%.2f exceeds min=%.2f; "
                 "falling back to least loaded server",
-                cached.id, cached_load, min_load,
+                cached.id, cached_norm, min_norm,
             )
             return self._pick_least_loaded(available, load_counts)
         return cached
 
-    def _is_overloaded(self, workload: int, minimum: int) -> bool:
-        return workload - minimum >= self.overload_workload_gap and workload >= minimum * self.overload_workload_ratio
+    def _is_overloaded(self, normalized_load: float, minimum_normalized: float) -> bool:
+        return (
+            normalized_load - minimum_normalized >= self.overload_workload_gap
+            and normalized_load >= minimum_normalized * self.overload_workload_ratio
+        )
 
     def on_response(self, server: Any, context: ServerSelectionContext, status_code: int) -> None:
         if not 200 <= status_code < 300 or self._redis_client is None:

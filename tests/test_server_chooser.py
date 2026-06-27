@@ -46,10 +46,11 @@ class Server:
     base_url: str
     model_id: int | None = None
     cache_time: int = 3600
+    weight: int = 1
 
 
-def make_server(server_id, base_url, cache_time=3600):
-    return Server(id=server_id, base_url=base_url, cache_time=cache_time)
+def make_server(server_id, base_url, cache_time=3600, weight=1):
+    return Server(id=server_id, base_url=base_url, cache_time=cache_time, weight=weight)
 
 
 def make_context(body: bytes = b"{}", request_id: int = 1):
@@ -119,6 +120,41 @@ def test_least_connection_chooser_returns_none_when_all_attempted():
     candidates = [make_server(1, "http://10.0.0.1:8000"), make_server(2, "http://10.0.0.2:8000")]
 
     assert chooser.choose(candidates, make_context(), {1, 2}) is None
+
+
+def test_least_connection_chooser_compares_normalized_load_by_weight():
+    # A: weight 3, workload 5 -> normalized 5/3 ~= 1.67
+    # B: weight 1, workload 2 -> normalized 2.0  -> A wins despite higher raw workload.
+    chooser = LeastConnectionServerChooser(lambda targets: {"http://10.0.0.1:8000": 5, "http://10.0.0.2:8000": 2})
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000", weight=3),
+        make_server(2, "http://10.0.0.2:8000", weight=1),
+    ]
+
+    selected = chooser.choose(candidates, make_context(), set())
+
+    assert selected.id == 1
+
+
+def test_least_connection_chooser_ties_on_normalized_load(monkeypatch):
+    # A: weight 2, workload 2 -> 1.0; B: weight 1, workload 1 -> 1.0 -> tie.
+    chooser = LeastConnectionServerChooser(lambda targets: {"http://10.0.0.1:8000": 2, "http://10.0.0.2:8000": 1})
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000", weight=2),
+        make_server(2, "http://10.0.0.2:8000", weight=1),
+    ]
+    choices = []
+
+    def choose(options):
+        choices.append(list(options))
+        return options[1]
+
+    monkeypatch.setattr("router.route_algorithm.least_connection.random.choice", choose)
+
+    selected = chooser.choose(candidates, make_context(), set())
+
+    assert selected.id == 2
+    assert [[server.id for server in options] for options in choices] == [[1, 2]]
 
 
 def test_prefix_cache_high_match_chooses_least_loaded_cached_server():
@@ -229,6 +265,54 @@ def test_prefix_cache_keeps_cached_server_when_workload_ratio_below_threshold():
     selected = chooser.choose(candidates, context, set())
 
     # Cached server 1 (workload 3) vs min 1: 3 >= 1*2 but gap 2 < 4 -> not overloaded.
+    assert selected.id == 1
+
+
+def test_prefix_cache_overload_uses_normalized_load_with_weight():
+    # Cached server 1: weight 3, workload 9 -> normalized 3.0
+    # Server 2:        weight 1, workload 0 -> normalized 0.0
+    # gap 3.0 >= 4? No. But ratio 3.0 >= 0*2 trivially. Not overloaded by gap alone.
+    # Use workload 12 -> normalized 4.0; gap 4.0 >= 4 and 4.0 >= 0 -> overloaded -> fallback to 2.
+    chooser = PrefixCachePrebleServerChooser(
+        lambda targets: {"http://10.0.0.1:8000": 12, "http://10.0.0.2:8000": 0},
+        prefix_block_chars=1,
+        overload_workload_gap=4,
+        overload_workload_ratio=2.0,
+    )
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000", weight=3),
+        make_server(2, "http://10.0.0.2:8000", weight=1),
+    ]
+    cached_body = make_body([str(i) for i in range(100)])
+    chooser.on_response(candidates[0], make_context(cached_body, request_id=101), 200)
+
+    context = make_context(make_body([str(i) for i in range(99)] + ["new"]))
+    selected = chooser.choose(candidates, context, set())
+
+    # normalized 4.0 vs 0.0 -> overloaded, fall back to server 2.
+    assert selected.id == 2
+
+
+def test_prefix_cache_keeps_high_weight_cached_server_when_normalized_low():
+    # Cached server 1: weight 3, workload 5 -> normalized 1.67
+    # Server 2:        weight 1, workload 0 -> normalized 0.0
+    # gap 1.67 < 4 -> not overloaded -> keep cached server 1 despite higher raw workload.
+    chooser = PrefixCachePrebleServerChooser(
+        lambda targets: {"http://10.0.0.1:8000": 5, "http://10.0.0.2:8000": 0},
+        prefix_block_chars=1,
+        overload_workload_gap=4,
+        overload_workload_ratio=2.0,
+    )
+    candidates = [
+        make_server(1, "http://10.0.0.1:8000", weight=3),
+        make_server(2, "http://10.0.0.2:8000", weight=1),
+    ]
+    cached_body = make_body([str(i) for i in range(100)])
+    chooser.on_response(candidates[0], make_context(cached_body, request_id=101), 200)
+
+    context = make_context(make_body([str(i) for i in range(99)] + ["new"]))
+    selected = chooser.choose(candidates, context, set())
+
     assert selected.id == 1
 
 

@@ -120,6 +120,8 @@ CREATE INDEX servers_online_model_idx
 
 `context_window` is an optional per-server request-size ceiling. If it is set, candidate selection excludes that server when `requests.estimate_tokens` is larger than the context window.
 
+`weight` is the server's capacity multiplier (default 1). Server selection compares normalized load `workload / weight`, so a server with weight 3 is chosen over a weight-1 server as long as its own workload is below three times the other's. VIP channel candidates are restricted to weight-1 servers.
+
 ## `requests` Table
 
 Current request-tracking columns include:
