@@ -32,6 +32,7 @@ class AutoRouteAlgorithm:
     SMALL_REQUEST_ROUTING_TOKEN_LIMIT = 3000
     PREFIX_CACHE_AUTO_HIT_THRESHOLD = 0.7
     ROUTING_USER_PROMPT_CHAR_LIMIT = 500
+    ROUTING_USER_PROMPT_MESSAGE_LIMIT = 20
 
     def __init__(self, chooser=None):
         self.chooser = chooser
@@ -651,11 +652,11 @@ class AutoRouteAlgorithm:
                 if text_parts:
                     user_contents.append(" ".join(text_parts))
 
-        last_three = user_contents[-3:]
+        selected = user_contents[-AutoRouteAlgorithm.ROUTING_USER_PROMPT_MESSAGE_LIMIT :]
         formatted_messages: list[dict[str, Any]] = []
         ordinals = ["1st", "2nd", "3rd"]
 
-        for index, content in enumerate(last_three):
+        for index, content in enumerate(selected):
             ordinal = ordinals[index] if index < len(ordinals) else f"{index + 1}th"
             content = AutoRouteAlgorithm._truncate_routing_user_prompt(content)
             formatted_messages.append(
