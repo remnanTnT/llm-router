@@ -109,7 +109,7 @@ For each accepted proxy request, the router creates a `requests` row in `process
    - `model` set to the selected routing model name
    - the configured system prompt
    - only user-role messages from the original request
-   - at most the last three user messages
+   - at most the last 20 user messages
    - each forwarded user message truncated to `500` characters
    - `response_format` requiring JSON schema `{"complexity": <integer 1-10>}`
    - `chat_template_kwargs.enable_thinking = false`
