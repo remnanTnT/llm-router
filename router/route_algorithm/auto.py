@@ -70,6 +70,7 @@ class AutoRouteAlgorithm:
             context,
             model,
             is_vip_channel,
+            origin_model_name,
         )
         if router_result is None:
             model, router_result = self._resolve_auto_model(
@@ -78,18 +79,21 @@ class AutoRouteAlgorithm:
                 context,
                 model,
                 context.auto_model_selection,
+                origin_model_name,
             )
-        context.router_result = self._router_result_with_origin(
-            origin_model_name,
-            router_result,
-        )
-        return AutoRouteDecision(model=model, router_result=context.router_result)
+        context.router_result = router_result
+        return AutoRouteDecision(model=model, router_result=router_result)
 
     @staticmethod
     def _router_result_with_origin(
         origin_model_name: str | None,
         router_result: str | None,
     ) -> str | None:
+        # IMPORTANT: the origin model name is stored as the prefix of
+        # router_result (everything before the first ":"). AdmissionService
+        # reads this prefix to bucket in-flight requests by their entrance
+        # model during concurrency checks. Do not remove or reorder this
+        # prefix without updating check_concurrency.
         if not router_result or not origin_model_name:
             return router_result
         return f"{origin_model_name}:{router_result}"[:300]
@@ -101,14 +105,16 @@ class AutoRouteAlgorithm:
         context: ServerSelectionContext,
         model,
         auto_model_selection: bool,
+        origin_model_name: str | None,
     ):
         if not auto_model_selection:
             return model, None
 
         model, router_result = self._get_auto_route_model(parsed.body, record, context)
+        prefixed = self._router_result_with_origin(origin_model_name, router_result)
         if model:
-            self._apply_resolved_model(parsed, record, context, model)
-        return model, router_result
+            self._apply_resolved_model(parsed, record, context, model, prefixed)
+        return model, prefixed
 
     def _resolve_small_request_routing_model(
         self,
@@ -117,6 +123,7 @@ class AutoRouteAlgorithm:
         context: ServerSelectionContext,
         model,
         is_vip_channel: bool,
+        origin_model_name: str | None,
     ):
         if is_vip_channel or not self.should_route_small_request(parsed):
             return model, None
@@ -127,14 +134,16 @@ class AutoRouteAlgorithm:
         if routing_model is None:
             return model, None
 
+        prefixed = self._router_result_with_origin(origin_model_name, "small_request_routing")
         self._apply_resolved_model(
             parsed,
             record,
             context,
             routing_model,
+            prefixed,
             disable_thinking=True,
         )
-        return routing_model, "small_request_routing"
+        return routing_model, prefixed
 
     def should_route_small_request(self, parsed) -> bool:
         return (
@@ -160,10 +169,12 @@ class AutoRouteAlgorithm:
         record,
         context: ServerSelectionContext,
         model,
+        router_result: str | None = None,
         disable_thinking: bool = False,
     ) -> None:
         record.model_id = model.id
-        record.save(update_fields=["model_id"])
+        record.router_result = router_result
+        record.save(update_fields=["model_id", "router_result"])
         parsed.model_name = model.model_name
         parsed.body = self.update_body_model(
             parsed.body,

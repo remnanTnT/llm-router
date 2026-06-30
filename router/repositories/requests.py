@@ -229,8 +229,17 @@ class RequestRepository:
             return len(record_ids)
 
     @staticmethod
-    def count_processing(ip_id: int, model_id: int) -> int:
-        return RequestRecord.objects.filter(ip_id=ip_id, model_id=model_id, task_status="processing").count()
+    def list_processing_for_concurrency(ip_id: int) -> list[dict]:
+        """In-flight rows for an IP, excluding VIP-sentinel traffic (user_ip_id == 2).
+
+        VIP-channel requests are accounted separately by VIP scaling, so they
+        must not be counted against a user's normal concurrency buckets.
+        """
+        return list(
+            RequestRecord.objects.filter(ip_id=ip_id, task_status="processing")
+            .exclude(user_ip_id=2)
+            .values("model_id", "router_result")
+        )
 
     @staticmethod
     def count_processing_by_targets(targets: list[str]) -> dict[str, int]:

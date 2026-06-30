@@ -39,9 +39,11 @@ class ModelRepository:
 
     @staticmethod
     def list_auto_selectable_models() -> list[Model]:
+        # Deprecation is intentionally ignored here: a model with complexity
+        # bounds is an auto-routing target even when deprecated by name, so a
+        # deprecated model can still serve `auto` requests.
         return list(
             Model.objects.filter(
-                deprecation__isnull=True,
                 complexity_min__isnull=False,
                 complexity_max__isnull=False,
                 complexity_min__gte=1,

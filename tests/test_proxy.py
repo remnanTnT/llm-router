@@ -1746,3 +1746,99 @@ def test_small_auto_request_succeeds_with_routing_server(monkeypatch):
     assert record.model_id == routing_model.id
     assert record.task_status == "success"
     assert record.router_result == "auto:small_request_routing"
+
+
+def test_deprecated_model_blocks_normal_user_but_serves_vip(monkeypatch):
+    deprecated_model = Model.objects.create(
+        model_name="glm-5",
+        deprecation="glm-5 is deprecated, please use glm-6.",
+    )
+    Server.objects.create(model_id=deprecated_model.id, base_url="http://glm5.example", is_online=True)
+    monkeypatch.setitem(APP_CONFIG.setdefault("server", {}), "vip_port", 8008)
+    Ips.objects.create(ip="10.10.10.20", concurrent_multiplier=1.0, vip=True)
+
+    # Normal port: deprecation blocks the request with 400.
+    normal_response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "glm-5", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+    assert normal_response.status_code == 400
+    assert normal_response.json()["error"]["message"] == "glm-5 is deprecated, please use glm-6."
+
+    # VIP port: the VIP user is let through to the model's own servers.
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://glm5.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "glm-5"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    vip_response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "glm-5", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+        SERVER_PORT="8008",
+        REMOTE_ADDR="10.10.10.20",
+    )
+
+    assert vip_response.status_code == 200
+    record = RequestRecord.objects.exclude(ip_id=LLM_CHOOSING_IP_ID).get(task_status="success")
+    assert record.model_id == deprecated_model.id
+    assert record.router_result is None
+
+
+def test_deprecated_model_with_complexity_bounds_serves_auto_request(monkeypatch):
+    deprecated_model = Model.objects.create(
+        model_name="glm-5",
+        deprecation="glm-5 is deprecated, please use glm-6.",
+        complexity_min=1,
+        complexity_max=10,
+    )
+    routing_model = Model.objects.create(model_name="router-model", is_routing_model=True)
+    Server.objects.create(model_id=deprecated_model.id, base_url="http://glm5.example", is_online=True)
+    Server.objects.create(model_id=routing_model.id, base_url="http://router.example", is_online=True)
+    monkeypatch.setattr("router.route_algorithm.auto.AutoRouteAlgorithm.SMALL_REQUEST_ROUTING_TOKEN_LIMIT", 0)
+
+    def fake_post(url, json, headers, timeout):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": '{"complexity":5}'}}]}
+        return response
+
+    def fake_request(self_inner, method, url, **kwargs):
+        assert url == "http://glm5.example/chat/completions"
+        data = json.loads(kwargs["data"].decode("utf-8"))
+        assert data["model"] == "glm-5"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.reason = "OK"
+        upstream.content = b"{}"
+        upstream.headers = {}
+        return upstream
+
+    monkeypatch.setattr("router.route_algorithm.auto.requests.post", fake_post)
+    monkeypatch.setattr(
+        "router.services.cancellable_upstream.CancellableUpstreamRequest.request",
+        fake_request,
+    )
+
+    response = Client().post(
+        "/v1/chat/completions",
+        data=json.dumps({"model": "auto", "messages": [{"role": "user", "content": "hello"}]}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    record = _external_request_record()
+    assert record.model_id == deprecated_model.id
+    assert record.router_result == "auto:complexity:5"

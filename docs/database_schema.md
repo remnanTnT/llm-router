@@ -60,7 +60,7 @@ ALTER TABLE models ADD COLUMN multimodal BOOLEAN NOT NULL DEFAULT FALSE;
 
 `vip` is admin-managed. Set it to a positive integer to enable VIP routing for that model. The value is the per-active-VIP-server workload threshold above which the router promotes another normal server into the VIP pool. `NULL` or `0` disables VIP routing for the model.
 
-`deprecation` is admin-managed. If it is not `NULL`, the router returns HTTP 400 with this value as the error message.
+`deprecation` is admin-managed. If it is not `NULL`, the router returns HTTP 400 with this value as the error message. This block applies to the normal port only; VIP-port requests for a concrete model are still served from that model's own servers. Deprecation does not affect auto-routing target eligibility: a deprecated model with `complexity_min`/`complexity_max` set can still serve `auto` requests.
 
 `is_routing_model` marks models that can receive internal complexity-classification requests and normal-port small-request routing.
 

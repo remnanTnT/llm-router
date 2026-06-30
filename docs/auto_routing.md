@@ -79,14 +79,15 @@ For each accepted proxy request, the router creates a `requests` row in `process
 
 4. Build the text target set.
 
-   Text targets are active models with:
+   Text targets are models with:
 
-   - `deprecation IS NULL`
    - `complexity_min IS NOT NULL`
    - `complexity_max IS NOT NULL`
    - `complexity_min >= 1`
    - `complexity_max <= 10`
    - `complexity_min <= complexity_max`
+
+   `models.deprecation` is intentionally ignored here. A model with complexity bounds is an auto-routing target even when deprecated by name, so a deprecated model can still serve `auto` requests.
 
    `models.auto` is not required for target eligibility. A model can be an auto target with `auto = FALSE`.
 
@@ -153,12 +154,22 @@ This only applies to true auto selection. Explicit concrete model requests do no
 The original client request row records:
 
 - `model_id`: updated to the selected concrete model when one is chosen.
-- `router_result`: original model prefix plus the route decision, capped at 300 characters.
+- `router_result`: original model prefix plus the route decision, capped at 300 characters. This is persisted during processing (together with `model_id`) as soon as a model is resolved, not only at request finish. `AdmissionService.check_concurrency` reads the prefix (everything before the first `:`) to bucket in-flight requests by their entrance model, so the origin prefix must not be removed or reordered.
 - `estimate_tokens`: fast estimate from the original body.
 - `model_choosing_latency`: elapsed milliseconds for small-request routing or true auto selection.
 - `prefix_cache` and `last_match`: server-selection prefix-cache data for the final upstream attempt.
 
 Routing LLM calls are separate internal request rows. Statistics APIs exclude rows with `ip_id = 0`.
+
+## Concurrency Accounting
+
+`AdmissionService.check_concurrency` limits in-flight requests per IP, bucketed by **entrance model** rather than by the model that ultimately serves the request:
+
+- A literal `auto` request counts under the `auto` bucket (limit `router.auto_concurrent_limit`), both while unresolved (`model_id = 0`) and after resolution (prefix `auto`).
+- A request for a concrete model by name counts under that model's bucket (limit `models.concurrent_limit`), whether or not the model is also `auto = TRUE`. While unresolved the record has a `NULL` `router_result` and its own `model_id`; after resolution it carries a `<name>:` prefix.
+- Because the bucket follows the entrance, an `auto -> B` request never counts against `B`'s concurrency, and a `source-model -> B` request never counts against the resolved target. Each entrance model enforces its own limit independently.
+
+VIP-channel requests are excluded from these counts (their records carry the `user_ip_id = 2` sentinel and are filtered out), since VIP capacity is managed by VIP scaling. Occasional over-limit under concurrent arrivals is tolerated; the check intentionally uses no locking.
 
 ## Example
 
