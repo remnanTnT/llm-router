@@ -2228,3 +2228,156 @@ def ai_assistant_user_feedback_list(request):
         }
     })
 
+
+@require_http_methods(["POST"])
+def update_review_slice(request):
+    """
+    更新 ReviewSlices 记录接口。
+
+    必传参数：
+    - id: 记录ID
+
+    可选修改参数（至少提供一个）：
+    - project_id: 项目ID（字符串）
+    - mr_iid: MR IID（字符串）
+    - start_time: 开始时间（格式：YYYY-MM-DD HH:MM:SS）
+    - review_id: Review ID（字符串）
+    - expert_model_name: Expert 模型名称（字符串）
+    - reflector_model_name: Reflector 模型名称（字符串）
+    - expert_duration: Expert 处理时长（浮点数）
+    - reflector_duration: Reflector 处理时长（浮点数）
+    - expert_comments: Expert 评论数（整数）
+    - reflector_passed: Reflector 通过数（整数）
+    - expert_retries: Expert 重试次数（整数）
+    - reflector_retries: Reflector 重试次数（整数）
+    - result: 结果（字符串）
+
+    返回：
+    - 更新成功返回更新后的记录信息
+    - 记录不存在返回404
+    - 参数错误返回400
+    """
+    from datetime import datetime
+    from router.models import ReviewSlices
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # 验证必传参数id
+    slice_id = data.get("id")
+    if slice_id is None:
+        return _bad_request("id is required")
+
+    try:
+        slice_id = int(slice_id)
+    except (TypeError, ValueError):
+        return _bad_request("id must be an integer")
+
+    # 检查记录是否存在
+    try:
+        slice_record = ReviewSlices.objects.get(id=slice_id, deleted_at__isnull=True)
+    except ReviewSlices.DoesNotExist:
+        return JsonResponse({"code": 404, "error": "record not found"}, status=404)
+
+    # 定义允许修改的字段及其类型
+    allowed_fields = {
+        "project_id": str,
+        "mr_iid": str,
+        "start_time": "datetime",
+        "review_id": str,
+        "expert_model_name": str,
+        "reflector_model_name": str,
+        "expert_duration": float,
+        "reflector_duration": float,
+        "expert_comments": int,
+        "reflector_passed": int,
+        "expert_retries": int,
+        "reflector_retries": int,
+        "result": str,
+    }
+
+    # 提取并验证可选字段
+    update_data = {}
+    for field, field_type in allowed_fields.items():
+        if field in data:
+            value = data[field]
+
+            # 处理 datetime 类型字段
+            if field_type == "datetime":
+                if value:
+                    try:
+                        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                            try:
+                                dt = datetime.strptime(value, fmt)
+                                update_data[field] = timezone.make_aware(dt, timezone.get_current_timezone())
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            return _bad_request(f"{field} format invalid, expected format: YYYY-MM-DD HH:MM:SS")
+                    except Exception as e:
+                        return _bad_request(f"{field} conversion failed: {str(e)}")
+                else:
+                    update_data[field] = None
+
+            # 处理浮点数类型字段
+            elif field_type == float:
+                if value is not None:
+                    try:
+                        update_data[field] = float(value)
+                    except (TypeError, ValueError):
+                        return _bad_request(f"{field} must be a float value")
+                else:
+                    update_data[field] = None
+
+            # 处理整数类型字段
+            elif field_type == int:
+                if value is not None:
+                    try:
+                        update_data[field] = int(value)
+                    except (TypeError, ValueError):
+                        return _bad_request(f"{field} must be an integer value")
+                else:
+                    update_data[field] = None
+
+            # 处理字符串类型字段
+            else:
+                update_data[field] = value if value else None
+
+    # 检查是否至少提供了一个修改字段
+    if not update_data:
+        return _bad_request("at least one field to update is required")
+
+    # 更新时间戳
+    update_data["updated_at"] = timezone.now()
+
+    # 执行更新
+    for field, value in update_data.items():
+        setattr(slice_record, field, value)
+    slice_record.save()
+
+    # 返回更新后的记录信息
+    return JsonResponse({
+        "code": 200,
+        "message": "updated",
+        "data": {
+            "id": slice_record.id,
+            "project_id": slice_record.project_id,
+            "mr_iid": slice_record.mr_iid,
+            "start_time": slice_record.start_time.isoformat() if slice_record.start_time else None,
+            "review_id": slice_record.review_id,
+            "expert_model_name": slice_record.expert_model_name,
+            "reflector_model_name": slice_record.reflector_model_name,
+            "expert_duration": slice_record.expert_duration,
+            "reflector_duration": slice_record.reflector_duration,
+            "expert_comments": slice_record.expert_comments,
+            "reflector_passed": slice_record.reflector_passed,
+            "expert_retries": slice_record.expert_retries,
+            "reflector_retries": slice_record.reflector_retries,
+            "result": slice_record.result,
+            "updated_at": slice_record.updated_at.isoformat() if slice_record.updated_at else None,
+        }
+    })
+
