@@ -1601,3 +1601,115 @@ curl -i -X POST http://localhost:8001/api/review_summary \
   }'
 ```
 
+## AI Assistant User Feedback List API
+
+```http
+GET /api/ai_assistant_user_feedback/list
+```
+
+查询 `ai_assistant_user_feedback` 表数据列表，支持多条件过滤和分页。所有参数均为可选，若无参数则返回全量数据（分页）。
+
+Query parameters (all optional):
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `create_start_time` | string | 创建时间开始范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS） |
+| `create_end_time` | string | 创建时间结束范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS） |
+| `domain` | string | 领域筛选（可选值：知识管理、辅助设计、代码分析、问题定位、Agent） |
+| `status` | string | 状态筛选（可选值：open、close、cancel） |
+| `reporter` | string | 报告人筛选（支持模糊匹配） |
+| `assignee` | string | 指派人筛选（支持模糊匹配） |
+| `priority` | string | 优先级筛选（可选值：高、中、低） |
+| `page` | integer | 页码（默认 1） |
+| `page_size` | integer | 每页大小（默认 10，最大 100） |
+
+Response JSON:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "total_count": 50,
+    "total_pages": 5,
+    "current_page": 1,
+    "page_size": 10,
+    "has_next": true,
+    "has_previous": false,
+    "items": [
+      {
+        "id": 1,
+        "domain": "知识管理",
+        "tool_version": "v1.2.0",
+        "issue_description": "搜索功能响应慢",
+        "reporter": "张三",
+        "reported_at": "2026-06-15T10:30:00+08:00",
+        "priority": "高",
+        "assignee": "李四",
+        "status": "open",
+        "estimated_resolution_at": "2026-06-20T18:00:00+08:00",
+        "actual_resolution_at": null,
+        "bugfix_version": null,
+        "progress_tracking": "已定位问题，正在优化",
+        "remarks": "优先处理",
+        "created_at": "2026-06-15T10:30:00+08:00",
+        "updated_at": "2026-06-16T09:00:00+08:00"
+      }
+    ]
+  }
+}
+```
+
+Example - get all feedback with default pagination:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list'
+```
+
+Example - filter by domain:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?domain=知识管理'
+```
+
+Example - filter by status:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?status=open'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?create_start_time=2026-06-01%2000:00:00&create_end_time=2026-06-30%2023:59:59'
+```
+
+Example - filter by reporter (fuzzy match):
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?reporter=张'
+```
+
+Example - filter by assignee (fuzzy match):
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?assignee=李'
+```
+
+Example - filter by priority:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?priority=高'
+```
+
+Example - custom pagination:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?page=2&page_size=20'
+```
+
+Example - combined filters:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?domain=知识管理&status=open&priority=高&page=1&page_size=20'
+```
+

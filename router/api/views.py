@@ -2073,3 +2073,158 @@ def create_review_summary(request):
     except Exception as e:
         return JsonResponse({"code": 500, "error": str(e)}, status=500)
 
+
+@require_http_methods(["GET"])
+def ai_assistant_user_feedback_list(request):
+    """
+    查询 AiAssistantUserFeedback 表数据列表（支持多条件过滤和分页）。
+
+    查询参数（全部可选）：
+    - create_start_time: 创建时间开始范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS）
+    - create_end_time: 创建时间结束范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS）
+    - domain: 领域筛选（可选值：知识管理、辅助设计、代码分析、问题定位、Agent）
+    - status: 状态筛选（可选值：open、close、cancel）
+    - reporter: 报告人筛选
+    - assignee: 指派人筛选
+    - priority: 优先级筛选（可选值：高、中、低）
+    - page: 页码（默认为1）
+    - page_size: 每页大小（默认为10，最大100）
+
+    返回：
+    - total_count: 总数据条数
+    - total_pages: 总页数
+    - current_page: 当前页码
+    - page_size: 每页大小
+    - has_next: 是否有下一页
+    - has_previous: 是否有上一页
+    - items: 数据列表，包含所有字段
+    """
+    import json
+    from datetime import datetime
+    from django.core.paginator import Paginator
+    from router.models import AiAssistantUserFeedback
+
+    # 获取筛选参数
+    create_start_time_str = request.GET.get("create_start_time")
+    create_end_time_str = request.GET.get("create_end_time")
+    domain = request.GET.get("domain")
+    status = request.GET.get("status")
+    reporter = request.GET.get("reporter")
+    assignee = request.GET.get("assignee")
+    priority = request.GET.get("priority")
+
+    # 处理筛选参数（去除空白）
+    domain = domain.strip() if domain else None
+    status = status.strip() if status else None
+    reporter = reporter.strip() if reporter else None
+    assignee = assignee.strip() if assignee else None
+    priority = priority.strip() if priority else None
+
+    # 验证 domain 参数
+    if domain:
+        valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+        if domain not in valid_domains:
+            return _bad_request(f"domain must be one of: {', '.join(valid_domains)}")
+
+    # 验证 status 参数
+    if status:
+        valid_statuses = ["open", "close", "cancel"]
+        if status not in valid_statuses:
+            return _bad_request(f"status must be one of: {', '.join(valid_statuses)}")
+
+    # 验证 priority 参数
+    if priority:
+        valid_priorities = ["高", "中", "低"]
+        if priority not in valid_priorities:
+            return _bad_request(f"priority must be one of: {', '.join(valid_priorities)}")
+
+    # 解析分页参数
+    page, page_size, error_msg = _parse_pagination(request, default_page_size=10, max_page_size=100)
+    if error_msg:
+        return _bad_request(error_msg)
+
+    # 解析时间参数
+    create_start_time = None
+    create_end_time = None
+
+    if create_start_time_str:
+        try:
+            create_start_time = datetime.strptime(create_start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            create_start_time = timezone.make_aware(create_start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("create_start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if create_end_time_str:
+        try:
+            create_end_time = datetime.strptime(create_end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            create_end_time = timezone.make_aware(create_end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("create_end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 构建基础查询（排除已删除记录）
+    queryset = AiAssistantUserFeedback.objects.filter(deleted_at__isnull=True)
+
+    # 应用筛选条件
+    if create_start_time:
+        queryset = queryset.filter(created_at__gte=create_start_time)
+
+    if create_end_time:
+        queryset = queryset.filter(created_at__lte=create_end_time)
+
+    if domain:
+        queryset = queryset.filter(domain=domain)
+
+    if status:
+        queryset = queryset.filter(status=status)
+
+    if reporter:
+        queryset = queryset.filter(reporter__icontains=reporter)
+
+    if assignee:
+        queryset = queryset.filter(assignee__icontains=assignee)
+
+    if priority:
+        queryset = queryset.filter(priority=priority)
+
+    # 按创建时间降序排序
+    queryset = queryset.order_by('-created_at')
+
+    # 分页
+    paginator = Paginator(queryset, page_size)
+    page_obj = paginator.page(page)
+
+    # 序列化数据
+    items = []
+    for feedback in page_obj.object_list:
+        items.append({
+            'id': feedback.id,
+            'domain': feedback.domain,
+            'tool_version': feedback.tool_version,
+            'issue_description': feedback.issue_description,
+            'reporter': feedback.reporter,
+            'reported_at': feedback.reported_at.isoformat() if feedback.reported_at else None,
+            'priority': feedback.priority,
+            'assignee': feedback.assignee,
+            'status': feedback.status,
+            'estimated_resolution_at': feedback.estimated_resolution_at.isoformat() if feedback.estimated_resolution_at else None,
+            'actual_resolution_at': feedback.actual_resolution_at.isoformat() if feedback.actual_resolution_at else None,
+            'bugfix_version': feedback.bugfix_version,
+            'progress_tracking': feedback.progress_tracking,
+            'remarks': feedback.remarks,
+            'created_at': feedback.created_at.isoformat() if feedback.created_at else None,
+            'updated_at': feedback.updated_at.isoformat() if feedback.updated_at else None,
+        })
+
+    return JsonResponse({
+        "code": 200,
+        "data": {
+            "total_count": paginator.count,
+            "total_pages": paginator.num_pages,
+            "current_page": page,
+            "page_size": page_size,
+            "has_next": page_obj.has_next(),
+            "has_previous": page_obj.has_previous(),
+            "items": items,
+        }
+    })
+
