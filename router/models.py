@@ -266,6 +266,7 @@ class CodehubReview(TimestampedSoftDeleteModel):
     second_level_confirmer = models.CharField(max_length=200, blank=True, null=True)
     is_modified = models.BooleanField(default=False)
     is_valid_issue = models.BooleanField(default=False)
+    is_modified_completed = models.BooleanField(default=False)
     notes = models.TextField(blank=True, null=True)
 
     class Meta:
@@ -314,3 +315,53 @@ class AiAssistantUserFeedback(TimestampedSoftDeleteModel):
     class Meta:
         managed = False
         db_table = "ai_assistant_user_feedback"
+
+
+class ReviewSlices(TimestampedSoftDeleteModel):
+    id = models.AutoField(primary_key=True)
+    project_id = models.CharField(max_length=100)
+    mr_iid = models.CharField(max_length=100)
+    start_time = models.DateTimeField()
+    review_id = models.CharField(max_length=100)
+    expert_model_name = models.CharField(max_length=200)
+    reflector_model_name = models.CharField(max_length=200)
+    expert_duration = models.FloatField(blank=True, null=True)
+    reflector_duration = models.FloatField(blank=True, null=True)
+    expert_comments = models.IntegerField(blank=True, null=True)
+    reflector_passed = models.IntegerField(blank=True, null=True)
+    expert_retries = models.IntegerField(blank=True, null=True)
+    reflector_retries = models.IntegerField(blank=True, null=True)
+    result = models.CharField(max_length=500, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = "review_slices"
+
+
+class ReviewSummary(TimestampedSoftDeleteModel):
+    id = models.AutoField(primary_key=True)
+    project_id = models.CharField(max_length=100)
+    mr_iid = models.CharField(max_length=100)
+    start_time = models.DateTimeField()
+    review_id = models.CharField(max_length=100)
+    expert_model_name = models.CharField(max_length=200)
+    reflector_model_name = models.CharField(max_length=200)
+    file_modified_count = models.IntegerField(blank=True, null=True)
+    total_duration = models.FloatField(blank=True, null=True)
+    slice_count = models.IntegerField(blank=True, null=True)
+    expert_avg_duration = models.FloatField(blank=True, null=True)
+    expert_trigger_count = models.IntegerField(blank=True, null=True)
+    expert_total_comments = models.IntegerField(blank=True, null=True)
+    expert_avg_comments = models.FloatField(blank=True, null=True)
+    expert_total_retries = models.IntegerField(blank=True, null=True)
+    reflector_avg_duration = models.FloatField(blank=True, null=True)
+    reflector_trigger_count = models.IntegerField(blank=True, null=True)
+    reflector_total_comments = models.IntegerField(blank=True, null=True)
+    reflector_avg_comments = models.FloatField(blank=True, null=True)
+    reflector_total_retries = models.IntegerField(blank=True, null=True)
+    reflector_total_passed = models.IntegerField(blank=True, null=True)
+    timeout = models.BooleanField(default=False)
+
+    class Meta:
+        managed = False
+        db_table = "review_summary"
