@@ -35,7 +35,7 @@ Optional `router` configuration keys:
 router:
   fallback_model: DeepSeek-V4-Flash
   system_prompt_path: router/assets/router_system_prompt.md
-  auto_concurrent_limit: 10
+  auto_concurrent_limit: 6
 ```
 
 - `fallback_model` is used when the routing LLM cannot produce a unique complexity target, and for context-overflow retry from an auto-selected model.
