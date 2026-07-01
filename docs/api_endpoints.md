@@ -1376,7 +1376,90 @@ curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback \
     "reporter": "张三",
     "reported_at": "2026-06-25 10:00:00",
     "status": "open",
-    "priority": "高"
+"priority": "高"
+  }'
+  ```
+
+```http
+POST /api/ai_assistant_user_feedback/update
+```
+
+Updates an existing AI Assistant user feedback record by ID. At least one field must be provided for update.
+
+Required field:
+
+- `id`: Record ID (integer)
+
+Optional update fields (at least one required):
+
+- `domain`: Domain (one of: 知识管理, 辅助设计, 代码分析, 问题定位, Agent)
+- `tool_version`: Tool version
+- `issue_description`: Issue description
+- `reporter`: Reporter name
+- `reported_at`: Reported time (format: YYYY-MM-DD HH:MM:SS)
+- `priority`: Priority (one of: 高, 中, 低)
+- `assignee`: Assignee
+- `status`: Status (one of: open, close, cancel)
+- `estimated_resolution_at`: Estimated resolution time (format: YYYY-MM-DD HH:MM:SS)
+- `actual_resolution_at`: Actual resolution time (format: YYYY-MM-DD HH:MM:SS)
+- `bugfix_version`: Bugfix version
+- `progress_tracking`: Progress tracking notes
+- `remarks`: Remarks
+
+Response format:
+
+```json
+{
+  "code": 200,
+  "message": "updated",
+  "data": {
+    "id": 1,
+    "domain": "代码分析",
+    "tool_version": "v1.2.0",
+    "issue_description": "代码分析功能响应缓慢",
+    "reporter": "张三",
+    "reported_at": "2026-06-25 10:00:00",
+    "priority": "高",
+    "assignee": "李四",
+    "status": "close",
+    "estimated_resolution_at": "2026-06-30 18:00:00",
+    "actual_resolution_at": "2026-06-28 16:30:00",
+    "bugfix_version": "v1.2.1",
+    "progress_tracking": "问题已定位并修复",
+    "remarks": "优化了查询性能",
+    "updated_at": "2026-06-28 16:30:00"
+  }
+}
+```
+
+Error responses:
+
+- `400`: Invalid request (missing id, invalid field values, or no fields provided for update)
+- `404`: Record not found
+- `500`: Server error
+
+Example - update status and assignee:
+
+```bash
+curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback/update \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": 1,
+    "status": "close",
+    "assignee": "李四",
+    "actual_resolution_at": "2026-06-28 16:30:00",
+    "bugfix_version": "v1.2.1"
+  }'
+```
+
+Example - update priority:
+
+```bash
+curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback/update \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": 1,
+    "priority": "中"
   }'
 ```
 
