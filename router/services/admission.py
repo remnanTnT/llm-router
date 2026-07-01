@@ -64,21 +64,33 @@ class AdmissionService:
         return AdmissionResult(True)
 
     def check_concurrency(self, ip: Ips, model: Model | None, is_auto: bool = False) -> AdmissionResult:
-        if not model and not is_auto:
+        if model is None and not is_auto:
             return AdmissionResult(True)
-        
-        limit_base = model.concurrent_limit if model else int(APP_CONFIG.get("router", {}).get("auto_concurrent_limit", 10))
+
+        if model is None:
+            # Literal "auto" entrance. In-flight records keep model_id = 0
+            # before resolution and "auto:..." prefix after, so both map here.
+            limit_base = int(APP_CONFIG.get("router", {}).get("auto_concurrent_limit", 6))
+            matches_entrance = self._entrance_is_auto
+        else:
+            # Concrete model by name (whether or not it is also auto=true):
+            # the entrance is the requested model. Before resolution records
+            # sit at this model_id with a NULL router_result; after resolution
+            # they carry a "<name>:..." prefix. Either way they map here.
+            limit_base = model.concurrent_limit
+            name_cf = model.model_name.casefold()
+            matches_entrance = lambda r: self._entrance_matches(r, name_cf, model.id)
+
         if limit_base is None:
             return AdmissionResult(True)
 
-        model_id = model.id if model else 0 # 0 for auto fallback tracking
-
-        # Throttled Auto-Cleanup
+        # Concurrency cleanup is still keyed by the entrance model_id (0 for auto).
+        model_id_for_cleanup = model.id if model else 0
         now = time.time()
-        last_run = self._last_cleanup.get(model_id, 0)
+        last_run = self._last_cleanup.get(model_id_for_cleanup, 0)
         if now - last_run > self._cleanup_throttle_seconds:
-            RequestRepository.cleanup_stale(model_id=model_id, threshold_minutes=self.stale_minutes)
-            self._last_cleanup[model_id] = now
+            RequestRepository.cleanup_stale(model_id=model_id_for_cleanup, threshold_minutes=self.stale_minutes)
+            self._last_cleanup[model_id_for_cleanup] = now
 
         limit = max(1, math.ceil(limit_base * (ip.concurrent_multiplier or 1.0)))
 
@@ -94,12 +106,12 @@ class AdmissionService:
         ):
             limit *= 4
 
-        current = RequestRepository.count_processing(ip.id, model_id)
+        current = self._count_inflight(ip.id, matches_entrance)
 
         if current >= limit:
-            cleaned = RequestRepository.cleanup_stale(model_id=model_id, threshold_minutes=self.stale_minutes, ip_id=ip.id)
+            cleaned = RequestRepository.cleanup_stale(model_id=model_id_for_cleanup, threshold_minutes=self.stale_minutes, ip_id=ip.id)
             if cleaned > 0:
-                current = RequestRepository.count_processing(ip.id, model_id)
+                current = self._count_inflight(ip.id, matches_entrance)
 
         if current >= limit:
             return AdmissionResult(
@@ -111,6 +123,32 @@ class AdmissionService:
                 limit,
             )
         return AdmissionResult(True)
+
+    @staticmethod
+    def _count_inflight(ip_id: int, predicate) -> int:
+        return sum(1 for row in RequestRepository.list_processing_for_concurrency(ip_id) if predicate(row))
+
+    @staticmethod
+    def _entrance_name(router_result: str | None) -> str | None:
+        if not router_result:
+            return None
+        return router_result.split(":", 1)[0].casefold()
+
+    @classmethod
+    def _entrance_is_auto(cls, row: dict) -> bool:
+        prefix = cls._entrance_name(row.get("router_result"))
+        if prefix is not None:
+            return prefix == "auto"
+        # Unresolved auto request: model_id is 0 until resolution.
+        return row.get("model_id") == 0
+
+    @classmethod
+    def _entrance_matches(cls, row: dict, name_cf: str, model_id: int) -> bool:
+        prefix = cls._entrance_name(row.get("router_result"))
+        if prefix is not None:
+            return prefix == name_cf
+        # Unresolved direct request for this model: NULL router_result, its own model_id.
+        return row.get("model_id") == model_id
 
     @staticmethod
     def _permission_denied() -> AdmissionResult:

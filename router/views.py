@@ -92,7 +92,7 @@ def proxy(request, path: str):
             RequestRepository.create_blocked(ip.id, 0, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_full_body_tokens)
             return error_response(400, message, "invalid_request_error")
 
-        if model and model.deprecation:
+        if model and model.deprecation and not is_vip_channel:
             message = model.deprecation
             RequestRepository.create_blocked(ip.id, model.id, parsed.stream, user_agent, 400, message, estimate_tokens=parsed.estimated_full_body_tokens)
             return error_response(400, message, "invalid_request_error")
