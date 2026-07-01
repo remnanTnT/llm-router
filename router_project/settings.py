@@ -27,6 +27,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "router.middleware.ClientDisconnectMiddleware",
+    "router.middleware.APITimingMiddleware",
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True

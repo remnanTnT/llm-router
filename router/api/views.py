@@ -937,6 +937,10 @@ def upsert_codehub_review(request):
     if "updated_at" not in processed_data:
         processed_data["updated_at"] = now
 
+    # Set default value for is_modified_completed if not provided
+    if "is_modified_completed" not in processed_data:
+        processed_data["is_modified_completed"] = False
+
     try:
         review = CodehubReview.objects.create(**processed_data)
         return JsonResponse({"code": 200, "message": "created", "data": {"id": review.id}})
@@ -1136,3 +1140,936 @@ def create_ai_assistant_user_feedback(request):
         })
     except Exception as e:
         return JsonResponse({"code": 500, "error": str(e)}, status=500)
+
+
+@require_http_methods(["GET"])
+def access_stats_by_department(request):
+    """
+    根据部门和时间范围查询IP访问统计。
+
+    查询参数：
+    - start_time: 开始时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - dept1: 一级部门（可选，"all"表示所有部门）
+    - dept2: 二级部门（可选，"all"表示所有部门）
+    - dept3: 三级部门（可选，"all"表示所有部门）
+    - dept4: 四级部门（可选，"all"表示所有部门）
+
+    返回：
+    - 按IP聚合的访问统计，包含用户信息和部门信息
+    """
+    parsed = _time_range_or_error(request)
+    if isinstance(parsed, JsonResponse):
+        return parsed
+    start, end = parsed
+
+    # 获取部门参数
+    dept1 = request.GET.get("dept1")
+    dept2 = request.GET.get("dept2")
+    dept3 = request.GET.get("dept3")
+    dept4 = request.GET.get("dept4")
+
+    # 处理部门参数：空字符串或"all"视为查询所有
+    dept1 = None if not dept1 or dept1.strip().lower() == "all" else dept1.strip()
+    dept2 = None if not dept2 or dept2.strip().lower() == "all" else dept2.strip()
+    dept3 = None if not dept3 or dept3.strip().lower() == "all" else dept3.strip()
+    dept4 = None if not dept4 or dept4.strip().lower() == "all" else dept4.strip()
+
+    # 查询数据
+    results = RequestRepository.count_success_by_ip_with_user_info(
+        start, end, dept1, dept2, dept3, dept4
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": results,
+        "total": len(results),
+        "start_time": start.astimezone(BEIJING_TZ).strftime(TIME_FORMAT),
+        "end_time": end.astimezone(BEIJING_TZ).strftime(TIME_FORMAT),
+    })
+
+
+@require_http_methods(["GET"])
+def whitelist_list(request):
+    """
+    获取白名单列表，支持分页。
+
+    查询参数：
+    - page: 页码（从1开始，可选）
+    - page_size: 每页条数（可选，默认不分页返回全量数据）
+
+    返回：
+    - 白名单数据列表
+    """
+    from router.repositories.whitelist import WhitelistRepository
+
+    # 获取分页参数
+    page_param = request.GET.get("page")
+    page_size_param = request.GET.get("page_size")
+
+    # 如果两个参数都提供了，则进行分页
+    if page_param is not None and page_size_param is not None:
+        page, page_size, error = _parse_pagination(request)
+        if error:
+            return _bad_request(error)
+
+        data, total = WhitelistRepository.list_all(page, page_size)
+
+        return JsonResponse({
+            "code": 200,
+            "data": data,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        })
+
+    # 否则返回全量数据
+    data, total = WhitelistRepository.list_all()
+
+    return JsonResponse({
+        "code": 200,
+        "data": data,
+        "total": total,
+    })
+
+
+@require_http_methods(["GET"])
+def ip_list_with_user_info(request):
+    """
+    获取IP列表及关联的用户和部门信息，支持分页和筛选。
+
+    查询参数：
+    - page: 页码（从1开始，可选）
+    - page_size: 每页条数（可选）
+    - employee_no: 员工工号筛选（模糊匹配，可选）
+    - ip: IP地址筛选（模糊匹配，可选）
+
+    返回：
+    - IP数据列表，包含并发数和关联的用户、部门信息
+    """
+    from router.repositories.ips import IPRepository
+
+    # 获取分页参数
+    page_param = request.GET.get("page")
+    page_size_param = request.GET.get("page_size")
+
+    # 获取筛选参数
+    employee_no = request.GET.get("employee_no")
+    ip = request.GET.get("ip")
+
+    # 处理筛选参数
+    employee_no = employee_no.strip() if employee_no else None
+    ip = ip.strip() if ip else None
+
+    # 如果两个分页参数都提供了，则进行分页
+    if page_param is not None and page_size_param is not None:
+        page, page_size, error = _parse_pagination(request)
+        if error:
+            return _bad_request(error)
+
+        data, total = IPRepository.list_with_user_info(
+            page=page,
+            page_size=page_size,
+            employee_no=employee_no,
+            ip=ip
+        )
+
+        return JsonResponse({
+            "code": 200,
+            "data": data,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        })
+
+    # 否则返回全量数据
+    data, total = IPRepository.list_with_user_info(
+        employee_no=employee_no,
+        ip=ip
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": data,
+        "total": total,
+    })
+
+
+@require_http_methods(["GET"])
+def codehub_review_stats(request):
+    """
+    获取CodehubReview统计信息。
+
+    查询参数（全部可选）：
+    - project_name: 项目名称
+    - branch_name: 分支名称
+    - start_time: 开始时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+
+    返回：
+    - total_count: 总数据条数
+    - valid_issue_count: is_valid_issue为true的条数
+    - invalid_issue_count: is_valid_issue为false的条数
+    - modified_completed_count: is_modified_completed为true的条数
+    - severity: 各个severity类型的数量
+    - latest_scan_commit_id: 最新的scan_commit_id（按scan_date排序）
+    """
+    from router.repositories.codehub_review import CodehubReviewRepository
+    from datetime import datetime
+
+    # 获取筛选参数
+    project_name = request.GET.get("project_name")
+    branch_name = request.GET.get("branch_name")
+    start_time_str = request.GET.get("start_time")
+    end_time_str = request.GET.get("end_time")
+
+    # 处理筛选参数
+    project_name = project_name.strip() if project_name else None
+    branch_name = branch_name.strip() if branch_name else None
+
+    # 解析时间参数
+    start_time = None
+    end_time = None
+
+    if start_time_str:
+        try:
+            start_time = datetime.strptime(start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            start_time = timezone.make_aware(start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if end_time_str:
+        try:
+            end_time = datetime.strptime(end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            end_time = timezone.make_aware(end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 查询统计数据
+    stats = CodehubReviewRepository.get_statistics(
+        project_name=project_name,
+        branch_name=branch_name,
+        start_time=start_time,
+        end_time=end_time
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": stats,
+    })
+
+
+@require_http_methods(["GET"])
+def codehub_review_category_stats(request):
+    """
+    获取CodehubReview的issue_category统计信息。
+
+    查询参数（全部可选）：
+    - project_name: 项目名称
+    - branch_name: 分支名称
+    - start_time: 开始时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+
+    返回：
+    - issue_category各个类型的数量
+    """
+    from router.repositories.codehub_review import CodehubReviewRepository
+    from datetime import datetime
+
+    # 获取筛选参数
+    project_name = request.GET.get("project_name")
+    branch_name = request.GET.get("branch_name")
+    start_time_str = request.GET.get("start_time")
+    end_time_str = request.GET.get("end_time")
+
+    # 处理筛选参数
+    project_name = project_name.strip() if project_name else None
+    branch_name = branch_name.strip() if branch_name else None
+
+    # 解析时间参数
+    start_time = None
+    end_time = None
+
+    if start_time_str:
+        try:
+            start_time = datetime.strptime(start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            start_time = timezone.make_aware(start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if end_time_str:
+        try:
+            end_time = datetime.strptime(end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            end_time = timezone.make_aware(end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 查询统计数据
+    category_stats = CodehubReviewRepository.get_issue_category_statistics(
+        project_name=project_name,
+        branch_name=branch_name,
+        start_time=start_time,
+        end_time=end_time
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": category_stats,
+    })
+
+
+@require_http_methods(["GET"])
+def codehub_review_severity_stats(request):
+    """
+    获取CodehubReview的severity详细统计信息。
+
+    查询参数（全部可选）：
+    - project_name: 项目名称
+    - branch_name: 分支名称
+    - start_time: 开始时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+
+    返回每个severity类型的详细数据：
+    - count: 各个severity类型的数量
+    - valid_issue_count: 各个severity类型的is_valid_issue为true的条数
+    - invalid_issue_count: 各个severity类型的is_valid_issue为false的条数
+    - modified_completed_count: 各个severity类型的is_modified_completed为true的条数
+    """
+    from router.repositories.codehub_review import CodehubReviewRepository
+    from datetime import datetime
+
+    # 获取筛选参数
+    project_name = request.GET.get("project_name")
+    branch_name = request.GET.get("branch_name")
+    start_time_str = request.GET.get("start_time")
+    end_time_str = request.GET.get("end_time")
+
+    # 处理筛选参数
+    project_name = project_name.strip() if project_name else None
+    branch_name = branch_name.strip() if branch_name else None
+
+    # 解析时间参数
+    start_time = None
+    end_time = None
+
+    if start_time_str:
+        try:
+            start_time = datetime.strptime(start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            start_time = timezone.make_aware(start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if end_time_str:
+        try:
+            end_time = datetime.strptime(end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            end_time = timezone.make_aware(end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 查询统计数据
+    severity_detail = CodehubReviewRepository.get_severity_detail_statistics(
+        project_name=project_name,
+        branch_name=branch_name,
+        start_time=start_time,
+        end_time=end_time
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": severity_detail,
+    })
+
+
+@require_http_methods(["GET"])
+def codehub_review_list(request):
+    """
+    获取CodehubReview列表查询接口（支持多条件过滤和分页）。
+
+    查询参数（全部可选）：
+    - project_name: 项目名称
+    - branch_name: 分支名称
+    - relative_path: 相对路径（支持模糊匹配，可传入多个值，用逗号分隔或多次传参）
+    - severity: 严重级别（可传入多个值，用逗号分隔或多次传参）
+    - issue_category: 问题类别（可传入多个值，用逗号分隔或多次传参）
+    - page: 页码（默认为1）
+    - page_size: 每页大小（默认为10，最大100）
+    - start_time: 开始时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+
+    返回：
+    - total_count: 总数据条数
+    - total_pages: 总页数
+    - current_page: 当前页码
+    - page_size: 每页大小
+    - has_next: 是否有下一页
+    - has_previous: 是否有上一页
+    - items: 数据列表，包含所有字段
+    """
+    from router.repositories.codehub_review import CodehubReviewRepository
+    from datetime import datetime
+
+    # 获取筛选参数
+    project_name = request.GET.get("project_name")
+    branch_name = request.GET.get("branch_name")
+    # 支持多值参数：可以通过逗号分隔或多次传参（如 relative_path=a&relative_path=b）
+    relative_path_raw = request.GET.getlist("relative_path")
+    severity_raw = request.GET.getlist("severity")
+    issue_category_raw = request.GET.getlist("issue_category")
+    start_time_str = request.GET.get("start_time")
+    end_time_str = request.GET.get("end_time")
+
+    # 处理筛选参数（去除空白）
+    project_name = project_name.strip() if project_name else None
+    branch_name = branch_name.strip() if branch_name else None
+
+    # 处理多值参数：支持逗号分隔和多次传参两种方式
+    def parse_multi_value(values: list) -> list | None:
+        """解析多值参数，支持逗号分隔和多次传参"""
+        if not values:
+            return None
+        # 展开逗号分隔的值
+        expanded = []
+        for v in values:
+            if v:
+                # 拆分逗号分隔的值
+                parts = [p.strip() for p in v.split(",") if p.strip()]
+                expanded.extend(parts)
+        return expanded if expanded else None
+
+    relative_path = parse_multi_value(relative_path_raw)
+    severity = parse_multi_value(severity_raw)
+    issue_category = parse_multi_value(issue_category_raw)
+
+    # 解析分页参数
+    page, page_size, error_msg = _parse_pagination(request, default_page_size=10, max_page_size=100)
+    if error_msg:
+        return _bad_request(error_msg)
+
+    # 解析时间参数
+    start_time = None
+    end_time = None
+
+    if start_time_str:
+        try:
+            start_time = datetime.strptime(start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            start_time = timezone.make_aware(start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if end_time_str:
+        try:
+            end_time = datetime.strptime(end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            end_time = timezone.make_aware(end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 查询数据
+    result = CodehubReviewRepository.get_filtered_reviews(
+        project_name=project_name,
+        branch_name=branch_name,
+        relative_path=relative_path,
+        severity=severity,
+        issue_category=issue_category,
+        start_time=start_time,
+        end_time=end_time,
+        page=page,
+        page_size=page_size,
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": result,
+    })
+
+
+@require_http_methods(["POST"])
+def update_codehub_review(request):
+    """
+    更新CodehubReview记录接口。
+
+    必传参数：
+    - id: 记录ID
+
+    可选修改参数（至少提供一个）：
+    - module: 模块名称
+    - first_level_confirmer: 一级确认人
+    - second_level_confirmer: 二级确认人
+    - is_valid_issue: 是否为有效问题（布尔值）
+    - is_modified: 是否已修改（布尔值）
+    - is_modified_completed: 是否修改完成（布尔值）
+    - notes: 备注
+
+    返回：
+    - 更新成功返回更新后的记录信息
+    - 记录不存在返回404
+    - 参数错误返回400
+    """
+    from router.repositories.codehub_review import CodehubReviewRepository
+    from router.models import CodehubReview
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # 验证必传参数id
+    review_id = data.get("id")
+    if review_id is None:
+        return _bad_request("id is required")
+
+    try:
+        review_id = int(review_id)
+    except (TypeError, ValueError):
+        return _bad_request("id must be an integer")
+
+    # 定义允许修改的字段
+    allowed_fields = {
+        "module": str,
+        "first_level_confirmer": str,
+        "second_level_confirmer": str,
+        "is_valid_issue": bool,
+        "is_modified": bool,
+        "is_modified_completed": bool,
+        "notes": str,
+    }
+
+    # 提取并验证可选字段
+    update_data = {}
+    for field, field_type in allowed_fields.items():
+        if field in data:
+            value = data[field]
+
+            # 处理布尔类型字段
+            if field_type == bool:
+                if isinstance(value, bool):
+                    update_data[field] = value
+                elif isinstance(value, str):
+                    if value.lower() == "true":
+                        update_data[field] = True
+                    elif value.lower() == "false":
+                        update_data[field] = False
+                    else:
+                        return _bad_request(f"{field} must be a boolean value")
+                else:
+                    return _bad_request(f"{field} must be a boolean value")
+            else:
+                # 字符串类型字段，允许空值
+                update_data[field] = value if value else None
+
+    # 检查是否至少提供了一个修改字段
+    if not update_data:
+        return _bad_request("at least one field to update is required")
+
+    # 执行更新
+    updated_review = CodehubReviewRepository.update_review(
+        review_id=review_id,
+        **update_data
+    )
+
+    if updated_review is None:
+        return JsonResponse({
+            "code": 404,
+            "error": f"CodehubReview with id {review_id} not found"
+        }, status=404)
+
+    # 返回更新后的记录信息
+    return JsonResponse({
+        "code": 200,
+        "message": "updated",
+        "data": {
+            "id": updated_review.id,
+            "module": updated_review.module,
+            "first_level_confirmer": updated_review.first_level_confirmer,
+            "second_level_confirmer": updated_review.second_level_confirmer,
+            "is_valid_issue": updated_review.is_valid_issue,
+            "is_modified": updated_review.is_modified,
+            "is_modified_completed": updated_review.is_modified_completed,
+            "notes": updated_review.notes,
+            "updated_at": updated_review.updated_at.isoformat() if updated_review.updated_at else None,
+        }
+    })
+
+
+@require_http_methods(["GET"])
+def codehub_review_relative_path_list(request):
+    """
+    获取CodehubReview中relative_path的去重列表。
+
+    查询参数（全部可选）：
+    - project_name: 项目名称
+    - branch_name: 分支名称
+    - severity: 严重级别
+    - issue_category: 问题类别
+    - start_time: 开始时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+
+    返回：
+    - relative_path的去重列表（按字母顺序排序）
+    """
+    from router.repositories.codehub_review import CodehubReviewRepository
+    from datetime import datetime
+
+    # 获取筛选参数
+    project_name = request.GET.get("project_name")
+    branch_name = request.GET.get("branch_name")
+    severity = request.GET.get("severity")
+    issue_category = request.GET.get("issue_category")
+    start_time_str = request.GET.get("start_time")
+    end_time_str = request.GET.get("end_time")
+
+    # 处理筛选参数（去除空白）
+    project_name = project_name.strip() if project_name else None
+    branch_name = branch_name.strip() if branch_name else None
+    severity = severity.strip() if severity else None
+    issue_category = issue_category.strip() if issue_category else None
+
+    # 解析时间参数
+    start_time = None
+    end_time = None
+
+    if start_time_str:
+        try:
+            start_time = datetime.strptime(start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            start_time = timezone.make_aware(start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if end_time_str:
+        try:
+            end_time = datetime.strptime(end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            end_time = timezone.make_aware(end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 查询数据
+    relative_paths = CodehubReviewRepository.get_relative_path_list(
+        project_name=project_name,
+        branch_name=branch_name,
+        severity=severity,
+        issue_category=issue_category,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": {
+            "total_count": len(relative_paths),
+            "relative_paths": relative_paths,
+        }
+    })
+
+
+@require_http_methods(["GET"])
+def codehub_review_severity_list(request):
+    """
+    获取CodehubReview中severity的去重列表。
+
+    查询参数（全部可选）：
+    - project_name: 项目名称
+    - branch_name: 分支名称
+    - relative_path: 相对路径（支持模糊匹配）
+    - issue_category: 问题类别
+    - start_time: 开始时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+
+    返回：
+    - severity的去重列表（按字母顺序排序）
+    """
+    from router.repositories.codehub_review import CodehubReviewRepository
+    from datetime import datetime
+
+    # 获取筛选参数
+    project_name = request.GET.get("project_name")
+    branch_name = request.GET.get("branch_name")
+    relative_path = request.GET.get("relative_path")
+    issue_category = request.GET.get("issue_category")
+    start_time_str = request.GET.get("start_time")
+    end_time_str = request.GET.get("end_time")
+
+    # 处理筛选参数（去除空白）
+    project_name = project_name.strip() if project_name else None
+    branch_name = branch_name.strip() if branch_name else None
+    relative_path = relative_path.strip() if relative_path else None
+    issue_category = issue_category.strip() if issue_category else None
+
+    # 解析时间参数
+    start_time = None
+    end_time = None
+
+    if start_time_str:
+        try:
+            start_time = datetime.strptime(start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            start_time = timezone.make_aware(start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if end_time_str:
+        try:
+            end_time = datetime.strptime(end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            end_time = timezone.make_aware(end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 查询数据
+    severities = CodehubReviewRepository.get_severity_list(
+        project_name=project_name,
+        branch_name=branch_name,
+        relative_path=relative_path,
+        issue_category=issue_category,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": {
+            "total_count": len(severities),
+            "severities": severities,
+        }
+    })
+
+
+@require_http_methods(["GET"])
+def codehub_review_issue_category_list(request):
+    """
+    获取CodehubReview中issue_category的去重列表。
+
+    查询参数（全部可选）：
+    - project_name: 项目名称
+    - branch_name: 分支名称
+    - relative_path: 相对路径（支持模糊匹配）
+    - severity: 严重级别
+    - start_time: 开始时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+
+    返回：
+    - issue_category的去重列表（按字母顺序排序）
+    """
+    from router.repositories.codehub_review import CodehubReviewRepository
+    from datetime import datetime
+
+    # 获取筛选参数
+    project_name = request.GET.get("project_name")
+    branch_name = request.GET.get("branch_name")
+    relative_path = request.GET.get("relative_path")
+    severity = request.GET.get("severity")
+    start_time_str = request.GET.get("start_time")
+    end_time_str = request.GET.get("end_time")
+
+    # 处理筛选参数（去除空白）
+    project_name = project_name.strip() if project_name else None
+    branch_name = branch_name.strip() if branch_name else None
+    relative_path = relative_path.strip() if relative_path else None
+    severity = severity.strip() if severity else None
+
+    # 解析时间参数
+    start_time = None
+    end_time = None
+
+    if start_time_str:
+        try:
+            start_time = datetime.strptime(start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            start_time = timezone.make_aware(start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if end_time_str:
+        try:
+            end_time = datetime.strptime(end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            end_time = timezone.make_aware(end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 查询数据
+    issue_categories = CodehubReviewRepository.get_issue_category_list(
+        project_name=project_name,
+        branch_name=branch_name,
+        relative_path=relative_path,
+        severity=severity,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    return JsonResponse({
+        "code": 200,
+        "data": {
+            "total_count": len(issue_categories),
+            "issue_categories": issue_categories,
+        }
+    })
+
+
+@require_http_methods(["POST"])
+def create_review_slice(request):
+    """
+    创建 ReviewSlices 记录接口。
+
+    必传参数：
+    - project_id: 项目ID（字符串）
+    - mr_iid: MR IID（字符串）
+    - start_time: 开始时间（格式：YYYY-MM-DD HH:MM:SS）
+    - review_id: Review ID（字符串）
+    - expert_model_name: Expert 模型名称（字符串）
+    - reflector_model_name: Reflector 模型名称（字符串）
+
+    可选参数：
+    - expert_duration: Expert 处理时长（浮点数）
+    - reflector_duration: Reflector 处理时长（浮点数）
+    - expert_comments: Expert 评论数（整数）
+    - reflector_passed: Reflector 通过数（整数）
+    - expert_retries: Expert 重试次数（整数）
+    - reflector_retries: Reflector 重试次数（整数）
+    - result: 结果（字符串）
+
+    返回：
+    - 创建成功返回记录 ID
+    - 参数错误返回 400
+    """
+    import json
+    from datetime import datetime
+    from router.models import ReviewSlices
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # Validate that all keys in data match model fields
+    valid_fields = {f.name for f in ReviewSlices._meta.fields if f.name not in ["id", "created_at", "updated_at", "deleted_at"]}
+    extra_fields = set(data.keys()) - valid_fields
+    if extra_fields:
+        return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
+
+    # Required fields validation
+    required_fields = ["project_id", "mr_iid", "start_time", "review_id", "expert_model_name", "reflector_model_name"]
+    for field in required_fields:
+        if field not in data or not data[field]:
+            return _bad_request(f"{field} is required")
+
+    # Process datetime fields
+    processed_data = {}
+    for key, value in data.items():
+        if key == "start_time":
+            if value:
+                try:
+                    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                        try:
+                            dt = datetime.strptime(value, fmt)
+                            processed_data[key] = timezone.make_aware(dt, timezone.get_current_timezone())
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        return _bad_request(f"{key} format invalid, expected format: YYYY-MM-DD HH:MM:SS")
+                except Exception as e:
+                    return _bad_request(f"{key} conversion failed: {str(e)}")
+            else:
+                processed_data[key] = None
+        else:
+            processed_data[key] = value
+
+    # Set timestamps
+    now = timezone.now()
+    processed_data["created_at"] = now
+    processed_data["updated_at"] = now
+
+    try:
+        slice_record = ReviewSlices.objects.create(**processed_data)
+        return JsonResponse({"code": 200, "message": "created", "data": {"id": slice_record.id}})
+    except Exception as e:
+        return JsonResponse({"code": 500, "error": str(e)}, status=500)
+
+
+@require_http_methods(["POST"])
+def create_review_summary(request):
+    """
+    创建 ReviewSummary 记录接口。
+
+    必传参数：
+    - project_id: 项目ID（字符串）
+    - mr_iid: MR IID（字符串）
+    - start_time: 开始时间（格式：YYYY-MM-DD HH:MM:SS）
+    - review_id: Review ID（字符串）
+    - expert_model_name: Expert 模型名称（字符串）
+    - reflector_model_name: Reflector 模型名称（字符串）
+
+    可选参数：
+    - file_modified_count: 修改文件数（整数）
+    - total_duration: 总时长（浮点数）
+    - slice_count: Slice 数量（整数）
+    - expert_avg_duration: Expert 平均时长（浮点数）
+    - expert_trigger_count: Expert 触发次数（整数）
+    - expert_total_comments: Expert 总评论数（整数）
+    - expert_avg_comments: Expert 平均评论数（浮点数）
+    - expert_total_retries: Expert 总重试次数（整数）
+    - reflector_avg_duration: Reflector 平均时长（浮点数）
+    - reflector_trigger_count: Reflector 触发次数（整数）
+    - reflector_total_comments: Reflector 总评论数（整数）
+    - reflector_avg_comments: Reflector 平均评论数（浮点数）
+    - reflector_total_retries: Reflector 总重试次数（整数）
+    - reflector_total_passed: Reflector 总通过数（整数）
+    - timeout: 是否超时（布尔值，默认 false）
+
+    返回：
+    - 创建成功返回记录 ID
+    - 参数错误返回 400
+    """
+    import json
+    from datetime import datetime
+    from router.models import ReviewSummary
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # Validate that all keys in data match model fields
+    valid_fields = {f.name for f in ReviewSummary._meta.fields if f.name not in ["id", "created_at", "updated_at", "deleted_at"]}
+    extra_fields = set(data.keys()) - valid_fields
+    if extra_fields:
+        return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
+
+    # Required fields validation
+    required_fields = ["project_id", "mr_iid", "start_time", "review_id", "expert_model_name", "reflector_model_name"]
+    for field in required_fields:
+        if field not in data or not data[field]:
+            return _bad_request(f"{field} is required")
+
+    # Process datetime fields
+    processed_data = {}
+    for key, value in data.items():
+        if key == "start_time":
+            if value:
+                try:
+                    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                        try:
+                            dt = datetime.strptime(value, fmt)
+                            processed_data[key] = timezone.make_aware(dt, timezone.get_current_timezone())
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        return _bad_request(f"{key} format invalid, expected format: YYYY-MM-DD HH:MM:SS")
+                except Exception as e:
+                    return _bad_request(f"{key} conversion failed: {str(e)}")
+            else:
+                processed_data[key] = None
+        else:
+            processed_data[key] = value
+
+    # Set timestamps
+    now = timezone.now()
+    processed_data["created_at"] = now
+    processed_data["updated_at"] = now
+
+    # Set default for timeout if not provided
+    if "timeout" not in processed_data:
+        processed_data["timeout"] = False
+
+    try:
+        summary_record = ReviewSummary.objects.create(**processed_data)
+        return JsonResponse({"code": 200, "message": "created", "data": {"id": summary_record.id}})
+    except Exception as e:
+        return JsonResponse({"code": 500, "error": str(e)}, status=500)
+

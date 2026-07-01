@@ -84,6 +84,7 @@ The range is inclusive. Bucketed endpoints choose granularity automatically: hou
 | `/api/model_request_count_by_period` | GET | `start_time`, `end_time`, `model_name` | | Bucketed successful request count for one model. |
 | `/api/model_ip_count_by_period` | GET | `start_time`, `end_time`, `model_name` | | Bucketed distinct IP count for one model. |
 | `/api/model_latency_boxplot` | GET | `start_time`, `end_time` | `model_names` comma list | Per-model latency boxplot data. Drops latencies above 890 seconds from quartiles and reports their ratio. |
+| `/api/access_stats_by_department` | GET | `start_time`, `end_time` | `dept1`, `dept2`, `dept3`, `dept4`; use `all` or omit for any department | Aggregates successful requests by IP with user and department info. Filters by department levels when provided. |
 
 Example:
 
@@ -128,6 +129,195 @@ curl -i -X POST http://localhost:8001/api/whitelist/update \
 ```
 
 `is_allowed` must be `0` or `1`.
+
+## Whitelist List
+
+```http
+GET /api/whitelist/list
+```
+
+Retrieves whitelist entries with optional pagination. Results are ordered by `update_time` descending.
+
+Query parameters (both optional):
+
+- `page`: Page number starting from 1
+- `page_size`: Number of records per page (max 100)
+
+If both parameters are provided, returns paginated results. Otherwise returns all records.
+
+Response format with pagination:
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "id": 1,
+      "employee_no": "E001",
+      "user_name": "张三",
+      "is_allowed": 1,
+      "update_time": "2026-06-25 10:00:00"
+    },
+    {
+      "id": 2,
+      "employee_no": "E002",
+      "user_name": "李四",
+      "is_allowed": 0,
+      "update_time": "2026-06-24 15:30:00"
+    }
+  ],
+  "total": 50,
+  "page": 1,
+  "page_size": 10
+}
+```
+
+Response format without pagination:
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "id": 1,
+      "employee_no": "E001",
+      "user_name": "张三",
+      "is_allowed": 1,
+      "update_time": "2026-06-25 10:00:00"
+    }
+  ],
+  "total": 50
+}
+```
+
+Example - get all records:
+
+```bash
+curl 'http://localhost:8001/api/whitelist/list'
+```
+
+Example - get paginated records:
+
+```bash
+curl 'http://localhost:8001/api/whitelist/list?page=1&page_size=10'
+```
+
+## IP List with User Info
+
+```http
+GET /api/ip/list
+```
+
+Retrieves IP addresses with concurrent multiplier and associated user/department information. Supports optional pagination and filtering.
+
+Query parameters (all optional):
+
+- `page`: Page number starting from 1
+- `page_size`: Number of records per page (max 100)
+- `employee_no`: Filter by employee number (partial match)
+- `ip`: Filter by IP address (partial match)
+
+If both `page` and `page_size` are provided, returns paginated results. Otherwise returns all records matching the filters.
+
+Response format with pagination:
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "id": 1,
+      "ip": "192.168.1.100",
+      "concurrent_multiplier": 2.0,
+      "vip": false,
+      "employee_no": "EMP001",
+      "user_name": "张三",
+      "user_charge": "产品经理",
+      "dept1": "技术部",
+      "dept2": "研发中心",
+      "dept3": "后端组",
+      "dept4": "平台研发"
+    },
+    {
+      "id": 2,
+      "ip": "192.168.1.101",
+      "concurrent_multiplier": 1.5,
+      "vip": true,
+      "employee_no": "EMP002",
+      "user_name": "李四",
+      "user_charge": "开发工程师",
+      "dept1": "技术部",
+      "dept2": "研发中心",
+      "dept3": "前端组",
+      "dept4": ""
+    }
+  ],
+  "total": 50,
+  "page": 1,
+  "page_size": 10
+}
+```
+
+Response format without pagination:
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "id": 1,
+      "ip": "192.168.1.100",
+      "concurrent_multiplier": 2.0,
+      "vip": false,
+      "employee_no": "EMP001",
+      "user_name": "张三",
+      "user_charge": "产品经理",
+      "dept1": "技术部",
+      "dept2": "研发中心",
+      "dept3": "后端组",
+      "dept4": "平台研发"
+    }
+  ],
+  "total": 50
+}
+```
+
+Example - get all IPs with user info:
+
+```bash
+curl 'http://localhost:8001/api/ip/list'
+```
+
+Example - get paginated IPs:
+
+```bash
+curl 'http://localhost:8001/api/ip/list?page=1&page_size=10'
+```
+
+Example - filter by employee number:
+
+```bash
+curl 'http://localhost:8001/api/ip/list?employee_no=EMP001'
+```
+
+Example - filter by IP address:
+
+```bash
+curl 'http://localhost:8001/api/ip/list?ip=192.168.1'
+```
+
+Example - combined filters with pagination:
+
+```bash
+curl 'http://localhost:8001/api/ip/list?page=1&page_size=10&employee_no=EMP&ip=192.168'
+```
+
+Notes:
+
+- IPs without associated user records will have empty user and department fields
+- Filtering supports partial matching (case-insensitive contains)
+- Results are ordered by IP ID ascending
+
 
 ## Refresh User Info
 
@@ -208,6 +398,838 @@ POST /api/codehub_review
 ```
 
 Creates a CodeHub review row. Payload keys must match `CodehubReview` model fields.
+
+Fields include:
+- `project_id`: Project identifier
+- `project_name`: Project name
+- `branch_name`: Branch name
+- `scan_commit_id`: Commit ID that was scanned
+- `scan_date`: Scan date (format: `YYYY-MM-DD HH:mm:ss`)
+- `completion_date`: Completion date (optional, format: `YYYY-MM-DD HH:mm:ss`)
+- `relative_path`: File path relative to project root
+- `line`: Line number
+- `issue_description`: Description of the issue
+- `severity`: Issue severity level
+- `issue_category`: Issue category
+- `module`: Module name
+- `first_level_confirmer`: First level confirmer (optional)
+- `second_level_confirmer`: Second level confirmer (optional)
+- `is_modified`: Whether the issue has been modified (default: `false`)
+- `is_valid_issue`: Whether this is a valid issue (default: `false`)
+- `is_modified_completed`: Whether the modification has been completed (default: `false`, auto-set if not provided)
+- `notes`: Additional notes (optional)
+
+Example:
+
+```bash
+curl -i -X POST http://localhost:8001/api/codehub_review \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "project_id": 123,
+    "project_name": "my-project",
+    "branch_name": "main",
+    "scan_commit_id": "abc123",
+    "scan_date": "2026-06-25 10:00:00",
+    "relative_path": "src/main.py",
+    "line": 42,
+    "issue_description": "Potential null pointer",
+    "severity": "high",
+    "issue_category": "bug",
+    "module": "core",
+    "is_modified": false,
+    "is_valid_issue": true
+  }'
+```
+
+Note: The `is_modified_completed` field defaults to `false` if not explicitly provided in the request.
+
+## CodeHub Review Statistics API
+
+```http
+GET /api/codehub_review/stats
+```
+
+Retrieves statistical information about CodeHub review issues. All query parameters are optional.
+
+Query parameters (all optional):
+
+- `project_name`: Filter by project name (exact match)
+- `branch_name`: Filter by branch name (exact match)
+- `start_time`: Start time based on scan_date (format: `YYYY-MM-DD HH:mm:ss`)
+- `end_time`: End time based on scan_date (format: `YYYY-MM-DD HH:mm:ss`)
+
+If no parameters are provided, returns statistics for all records.
+
+Response format:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "total_count": 150,
+    "valid_issue_count": 80,
+    "invalid_issue_count": 70,
+    "modified_completed_count": 45,
+    "severity": {
+      "high": 25,
+      "medium": 60,
+      "low": 50,
+      "critical": 15
+    },
+    "latest_scan_commit_id": "abc123def456"
+  }
+}
+```
+
+Response fields:
+
+- `total_count`: Total number of records matching the filter
+- `valid_issue_count`: Number of records where `is_valid_issue` is `true`
+- `invalid_issue_count`: Number of records where `is_valid_issue` is `false`
+- `modified_completed_count`: Number of records where `is_modified_completed` is `true`
+- `severity`: Object with severity types as keys and their counts as values
+- `latest_scan_commit_id`: Most recent `scan_commit_id` based on `scan_date` ordering, or `null` if no records exist
+
+Example - get all statistics:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/stats'
+```
+
+Example - filter by project:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/stats?project_name=my-project'
+```
+
+Example - filter by project and branch:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/stats?project_name=my-project&branch_name=main'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/stats?start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+Example - combined filters:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/stats?project_name=my-project&branch_name=main&start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+## CodeHub Review Category Statistics API
+
+```http
+GET /api/codehub_review/category_stats
+```
+
+Retrieves detailed issue category statistics from CodeHub review records. For each issue category type, returns total count, valid issue count, invalid issue count, and modified completed count. All query parameters are optional.
+
+Query parameters (all optional):
+
+- `project_name`: Filter by project name (exact match)
+- `branch_name`: Filter by branch name (exact match)
+- `start_time`: Start time based on scan_date (format: `YYYY-MM-DD HH:mm:ss`)
+- `end_time`: End time based on scan_date (format: `YYYY-MM-DD HH:mm:ss`)
+
+If no parameters are provided, returns statistics for all records.
+
+Response format:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "Code Smell": {
+      "count": 45,
+      "valid_issue_count": 30,
+      "invalid_issue_count": 15,
+      "modified_completed_count": 20
+    },
+    "Bug": {
+      "count": 32,
+      "valid_issue_count": 25,
+      "invalid_issue_count": 7,
+      "modified_completed_count": 18
+    },
+    "Vulnerability": {
+      "count": 18,
+      "valid_issue_count": 10,
+      "invalid_issue_count": 8,
+      "modified_completed_count": 5
+    },
+    "Security Hotspot": {
+      "count": 12,
+      "valid_issue_count": 5,
+      "invalid_issue_count": 7,
+      "modified_completed_count": 3
+    },
+    "Maintainability": {
+      "count": 25,
+      "valid_issue_count": 15,
+      "invalid_issue_count": 10,
+      "modified_completed_count": 8
+    },
+    "Reliability": {
+      "count": 18,
+      "valid_issue_count": 12,
+      "invalid_issue_count": 6,
+      "modified_completed_count": 7
+    }
+  }
+}
+```
+
+Response fields per category type:
+
+- `count`: Total number of records for this category type
+- `valid_issue_count`: Number of records where `is_valid_issue` is `true` for this category type
+- `invalid_issue_count`: Number of records where `is_valid_issue` is `false` for this category type
+- `modified_completed_count`: Number of records where `is_modified_completed` is `true` for this category type
+
+Example - get all category statistics:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/category_stats'
+```
+
+Example - filter by project:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/category_stats?project_name=my-project'
+```
+
+Example - filter by project and branch:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/category_stats?project_name=my-project&branch_name=main'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/category_stats?start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+Example - combined filters:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/category_stats?project_name=my-project&branch_name=main&start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+## CodeHub Review Severity Statistics API
+
+```http
+GET /api/codehub_review/severity_stats
+```
+
+Retrieves detailed severity-level statistics from CodeHub review records. For each severity type, returns total count, valid issue count, invalid issue count, and modified completed count. All query parameters are optional.
+
+Query parameters (all optional):
+
+- `project_name`: Filter by project name (exact match)
+- `branch_name`: Filter by branch name (exact match)
+- `start_time`: Start time based on scan_date (format: `YYYY-MM-DD HH:mm:ss`)
+- `end_time`: End time based on scan_date (format: `YYYY-MM-DD HH:mm:ss`)
+
+If no parameters are provided, returns statistics for all records.
+
+Response format:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "critical": {
+      "count": 15,
+      "valid_issue_count": 10,
+      "invalid_issue_count": 5,
+      "modified_completed_count": 8
+    },
+    "high": {
+      "count": 25,
+      "valid_issue_count": 18,
+      "invalid_issue_count": 7,
+      "modified_completed_count": 12
+    },
+    "medium": {
+      "count": 60,
+      "valid_issue_count": 35,
+      "invalid_issue_count": 25,
+      "modified_completed_count": 20
+    },
+    "low": {
+      "count": 50,
+      "valid_issue_count": 17,
+      "invalid_issue_count": 33,
+      "modified_completed_count": 5
+    }
+  }
+}
+```
+
+Response fields per severity type:
+
+- `count`: Total number of records for this severity type
+- `valid_issue_count`: Number of records where `is_valid_issue` is `true` for this severity type
+- `invalid_issue_count`: Number of records where `is_valid_issue` is `false` for this severity type
+- `modified_completed_count`: Number of records where `is_modified_completed` is `true` for this severity type
+
+Example - get all severity statistics:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_stats'
+```
+
+Example - filter by project:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_stats?project_name=my-project'
+```
+
+Example - filter by project and branch:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_stats?project_name=my-project&branch_name=main'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_stats?start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+Example - combined filters:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_stats?project_name=my-project&branch_name=main&start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+### CodehubReview List API
+
+```http
+GET /api/codehub_review/list
+```
+
+查询 CodehubReview 表数据列表，支持多条件过滤和分页。所有参数均为可选，若无参数则返回全量数据（分页）。
+
+Query parameters (all optional):
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `project_name` | string | 项目名称筛选 |
+| `branch_name` | string | 分支名称筛选 |
+| `relative_path` | string or string[] | 相对路径筛选（支持模糊匹配，可传入多个值，用逗号分隔或多次传参） |
+| `severity` | string or string[] | 严重级别筛选（可传入多个值，用逗号分隔或多次传参） |
+| `issue_category` | string or string[] | 问题类别筛选（可传入多个值，用逗号分隔或多次传参） |
+| `page` | integer | 页码（默认 1） |
+| `page_size` | integer | 每页大小（默认 10，最大 100） |
+| `start_time` | string | 开始时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
+| `end_time` | string | 结束时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
+
+**多值参数说明**：
+
+`relative_path`、`severity`、`issue_category` 三个参数支持传入多个值，有两种方式：
+
+1. **逗号分隔**：在单个参数值中用逗号分隔多个值
+   ```bash
+   # 筛选 severity 为 critical 或 high
+   curl 'http://localhost:8001/api/codehub_review/list?severity=critical,high'
+   
+   # 筛选 relative_path 包含 src/main 或 src/utils
+   curl 'http://localhost:8001/api/codehub_review/list?relative_path=src/main,src/utils'
+   ```
+
+2. **多次传参**：同一个参数名多次传递（标准 HTTP 多值参数方式）
+   ```bash
+   # 筛选 severity 为 critical 或 high
+   curl 'http://localhost:8001/api/codehub_review/list?severity=critical&severity=high'
+   
+   # 筛选 issue_category 为 security 或 performance
+   curl 'http://localhost:8001/api/codehub_review/list?issue_category=security&issue_category=performance'
+   ```
+
+两种方式可以混合使用，最终结果为所有值的合集筛选。
+
+Response JSON:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "total_count": 150,
+    "total_pages": 15,
+    "current_page": 1,
+    "page_size": 10,
+    "has_next": true,
+    "has_previous": false,
+    "items": [
+      {
+        "id": 123,
+        "project_id": 1,
+        "project_name": "my-project",
+        "branch_name": "main",
+        "scan_commit_id": "abc123",
+        "scan_date": "2026-06-15T10:30:00+08:00",
+        "completion_date": "2026-06-16T15:00:00+08:00",
+        "relative_path": "src/main.py",
+        "line": 42,
+        "issue_description": "Potential null pointer dereference",
+        "severity": "critical",
+        "issue_category": "security",
+        "module": "core",
+        "first_level_confirmer": "user1",
+        "second_level_confirmer": "user2",
+        "is_modified": false,
+        "is_valid_issue": true,
+        "is_modified_completed": false,
+        "notes": null,
+        "created_at": "2026-06-15T10:30:00+08:00",
+        "updated_at": "2026-06-15T10:30:00+08:00"
+      }
+    ]
+  }
+}
+```
+
+Example - get all reviews with default pagination:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list'
+```
+
+Example - filter by project:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?project_name=my-project'
+```
+
+Example - filter by project and branch:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?project_name=my-project&branch_name=main'
+```
+
+Example - filter by severity (single value):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?severity=critical'
+```
+
+Example - filter by severity (multiple values, comma-separated):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?severity=critical,high,medium'
+```
+
+Example - filter by severity (multiple values, repeated parameter):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?severity=critical&severity=high'
+```
+
+Example - filter by issue category (single value):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?issue_category=security'
+```
+
+Example - filter by issue category (multiple values):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?issue_category=security,performance'
+```
+
+Example - filter by relative path (single value, fuzzy match):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?relative_path=src/main'
+```
+
+Example - filter by relative path (multiple values, fuzzy match):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?relative_path=src/main,src/utils,tests/'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+Example - custom pagination:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?page=2&page_size=20'
+```
+
+Example - combined filters (multiple severity values with other filters):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?project_name=my-project&branch_name=main&severity=critical,high&page=1&page_size=20&start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+Example - combined filters (multiple issue categories with multiple relative paths):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/list?project_name=my-project&issue_category=security,performance&relative_path=src/api,src/auth&page=1&page_size=50'
+```
+
+### CodehubReview Update API
+
+```http
+POST /api/codehub_review/update
+```
+
+更新 CodehubReview 表中的记录。必传参数为 `id`，可选修改参数至少需提供一个。
+
+Request body (JSON):
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | integer | **Yes** | 记录ID |
+| `module` | string | No | 模块名称 |
+| `first_level_confirmer` | string | No | 一级确认人 |
+| `second_level_confirmer` | string | No | 二级确认人 |
+| `is_valid_issue` | boolean | No | 是否为有效问题 |
+| `is_modified` | boolean | No | 是否已修改 |
+| `is_modified_completed` | boolean | No | 是否修改完成 |
+| `notes` | string | No | 备注 |
+
+注意：`id` 为必传参数，可选修改参数中至少需要提供一个字段。
+
+Response JSON (success):
+
+```json
+{
+  "code": 200,
+  "message": "updated",
+  "data": {
+    "id": 123,
+    "module": "auth",
+    "first_level_confirmer": "user1",
+    "second_level_confirmer": "user2",
+    "is_valid_issue": true,
+    "is_modified": true,
+    "is_modified_completed": true,
+    "notes": "Issue confirmed and fixed",
+    "updated_at": "2026-06-30T15:30:00+08:00"
+  }
+}
+```
+
+Response JSON (not found):
+
+```json
+{
+  "code": 404,
+  "error": "CodehubReview with id 123 not found"
+}
+```
+
+Response JSON (missing fields):
+
+```json
+{
+  "code": 400,
+  "error": "at least one field to update is required"
+}
+```
+
+Example - update module:
+
+```bash
+curl -i -X POST http://localhost:8001/api/codehub_review/update \
+  -H 'Content-Type: application/json' \
+  -d '{"id": 123, "module": "authentication"}'
+```
+
+Example - update confirmation fields:
+
+```bash
+curl -i -X POST http://localhost:8001/api/codehub_review/update \
+  -H 'Content-Type: application/json' \
+  -d '{"id": 123, "first_level_confirmer": "zhang_san", "second_level_confirmer": "li_si"}'
+```
+
+Example - update validity status:
+
+```bash
+curl -i -X POST http://localhost:8001/api/codehub_review/update \
+  -H 'Content-Type: application/json' \
+  -d '{"id": 123, "is_valid_issue": true}'
+```
+
+Example - update modification status:
+
+```bash
+curl -i -X POST http://localhost:8001/api/codehub_review/update \
+  -H 'Content-Type: application/json' \
+  -d '{"id": 123, "is_modified": true, "is_modified_completed": true}'
+```
+
+Example - update notes:
+
+```bash
+curl -i -X POST http://localhost:8001/api/codehub_review/update \
+  -H 'Content-Type: application/json' \
+  -d '{"id": 123, "notes": "Issue verified and fixed in commit abc123"}'
+```
+
+Example - update multiple fields:
+
+```bash
+curl -i -X POST http://localhost:8001/api/codehub_review/update \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": 123,
+    "module": "security",
+    "first_level_confirmer": "security_team",
+    "is_valid_issue": true,
+    "is_modified_completed": true,
+    "notes": "Critical security issue fixed"
+  }'
+```
+
+### CodehubReview Relative Path List API
+
+```http
+GET /api/codehub_review/relative_path_list
+```
+
+查询 CodehubReview 表中 relative_path 的去重列表，支持多条件过滤。所有参数均为可选，若无参数则返回全量 relative_path 种类列表（去重并按字母顺序排序）。
+
+Query parameters (all optional):
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `project_name` | string | 项目名称筛选 |
+| `branch_name` | string | 分支名称筛选 |
+| `severity` | string | 严重级别筛选 |
+| `issue_category` | string | 问题类别筛选 |
+| `start_time` | string | 开始时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
+| `end_time` | string | 结束时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
+
+Response JSON:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "total_count": 45,
+    "relative_paths": [
+      "src/auth/login.py",
+      "src/auth/session.py",
+      "src/core/config.py",
+      "src/models/user.py",
+      "tests/test_auth.py"
+    ]
+  }
+}
+```
+
+Example - get all relative paths:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/relative_path_list'
+```
+
+Example - filter by project:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/relative_path_list?project_name=my-project'
+```
+
+Example - filter by project and branch:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/relative_path_list?project_name=my-project&branch_name=main'
+```
+
+Example - filter by severity:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/relative_path_list?severity=critical'
+```
+
+Example - filter by issue category:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/relative_path_list?issue_category=security'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/relative_path_list?start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+Example - combined filters:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/relative_path_list?project_name=my-project&branch_name=main&severity=critical&start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+### CodehubReview Severity List API
+
+```http
+GET /api/codehub_review/severity_list
+```
+
+查询 CodehubReview 表中 severity 的去重列表，支持多条件过滤。所有参数均为可选，若无参数则返回全量 severity 种类列表（去重并按字母顺序排序）。
+
+Query parameters (all optional):
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `project_name` | string | 项目名称筛选 |
+| `branch_name` | string | 分支名称筛选 |
+| `relative_path` | string | 相对路径筛选（支持模糊匹配） |
+| `issue_category` | string | 问题类别筛选 |
+| `start_time` | string | 开始时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
+| `end_time` | string | 结束时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
+
+Response JSON:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "total_count": 4,
+    "severities": [
+      "critical",
+      "high",
+      "low",
+      "medium"
+    ]
+  }
+}
+```
+
+Example - get all severities:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_list'
+```
+
+Example - filter by project:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_list?project_name=my-project'
+```
+
+Example - filter by project and branch:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_list?project_name=my-project&branch_name=main'
+```
+
+Example - filter by relative path (fuzzy match):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_list?relative_path=src/auth'
+```
+
+Example - filter by issue category:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_list?issue_category=security'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_list?start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+Example - combined filters:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/severity_list?project_name=my-project&branch_name=main&relative_path=src&issue_category=security&start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+### CodehubReview Issue Category List API
+
+```http
+GET /api/codehub_review/issue_category_list
+```
+
+查询 CodehubReview 表中 issue_category 的去重列表，支持多条件过滤。所有参数均为可选，若无参数则返回全量 issue_category 种类列表（去重并按字母顺序排序）。
+
+Query parameters (all optional):
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `project_name` | string | 项目名称筛选 |
+| `branch_name` | string | 分支名称筛选 |
+| `relative_path` | string | 相对路径筛选（支持模糊匹配） |
+| `severity` | string | 严重级别筛选 |
+| `start_time` | string | 开始时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
+| `end_time` | string | 结束时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
+
+Response JSON:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "total_count": 5,
+    "issue_categories": [
+      "Bug",
+      "Code Smell",
+      "Maintainability",
+      "Reliability",
+      "Vulnerability"
+    ]
+  }
+}
+```
+
+Example - get all issue categories:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/issue_category_list'
+```
+
+Example - filter by project:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/issue_category_list?project_name=my-project'
+```
+
+Example - filter by project and branch:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/issue_category_list?project_name=my-project&branch_name=main'
+```
+
+Example - filter by relative path (fuzzy match):
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/issue_category_list?relative_path=src/auth'
+```
+
+Example - filter by severity:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/issue_category_list?severity=critical'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/issue_category_list?start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
+
+Example - combined filters:
+
+```bash
+curl 'http://localhost:8001/api/codehub_review/issue_category_list?project_name=my-project&branch_name=main&relative_path=src&severity=critical&start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
+```
 
 ## Daily MR Review API
 
@@ -357,3 +1379,225 @@ curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback \
     "priority": "高"
   }'
 ```
+
+## Access Stats by Department API
+
+```http
+GET /api/access_stats_by_department
+```
+
+Aggregates successful request counts by IP address with associated user and department information. Filters results by department levels when provided.
+
+Query parameters:
+
+- `start_time`: Start time in Beijing timezone (format: `YYYY-MM-DD HH:mm:ss`)
+- `end_time`: End time in Beijing timezone (format: `YYYY-MM-DD HH:mm:ss`)
+- `dept1`: Level 1 department filter (optional; use `all` or omit to include all)
+- `dept2`: Level 2 department filter (optional; use `all` or omit to include all)
+- `dept3`: Level 3 department filter (optional; use `all` or omit to include all)
+- `dept4`: Level 4 department filter (optional; use `all` or omit to include all)
+
+The endpoint performs the following:
+
+1. Queries successful requests (`task_status="success"`) within the time range
+2. Aggregates by `ip_id` to count requests per IP
+3. Joins `ips` table to retrieve IP addresses
+4. Joins `user_ips` table to retrieve user information (`user_name`, `user_charge`, `employee_no`)
+5. Joins `departments` table to retrieve department hierarchy (`dept1`-`dept4`)
+6. Filters results by department parameters when provided
+
+Response format:
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "ip": "192.168.1.100",
+      "access_count": 1520,
+      "user_name": "张三",
+      "user_charge": "产品经理",
+      "employee_no": "EMP001",
+      "dept1": "技术部",
+      "dept2": "研发中心",
+      "dept3": "后端组",
+      "dept4": "平台研发"
+    },
+    {
+      "ip": "192.168.1.101",
+      "access_count": 890,
+      "user_name": "李四",
+      "user_charge": "开发工程师",
+      "employee_no": "EMP002",
+      "dept1": "技术部",
+      "dept2": "研发中心",
+      "dept3": "前端组",
+      "dept4": ""
+    }
+  ],
+  "total": 2,
+  "start_time": "2026-06-24 00:00:00",
+  "end_time": "2026-06-25 23:59:59"
+}
+```
+
+Example - query all departments:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59'
+```
+
+Example - filter by level 1 department:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&dept1=技术部'
+```
+
+Example - filter by multiple department levels:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&dept1=技术部&dept2=研发中心&dept3=后端组'
+```
+
+Notes:
+
+- Department filters use exact matching, not pattern matching
+- Multiple department filters are combined with AND logic
+- Only valid, non-deleted user and department records are included
+- Internal routing requests (`ip_id=0`) are excluded from results
+
+## Review Slice Create API
+
+```http
+POST /api/review_slice
+```
+
+创建 ReviewSlices 表记录，用于存储 MR live review 的切片处理数据。
+
+Request body (JSON):
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_id` | string | **Yes** | 项目ID |
+| `mr_iid` | string | **Yes** | Merge Request IID |
+| `start_time` | string | **Yes** | 开始时间（格式：YYYY-MM-DD HH:MM:SS） |
+| `review_id` | string | **Yes** | Review ID |
+| `expert_model_name` | string | **Yes** | Expert 模型名称 |
+| `reflector_model_name` | string | **Yes** | Reflector 模型名称 |
+| `expert_duration` | float | No | Expert 处理时长（秒） |
+| `reflector_duration` | float | No | Reflector 处理时长（秒） |
+| `expert_comments` | integer | No | Expert 评论数 |
+| `reflector_passed` | integer | No | Reflector 通过数 |
+| `expert_retries` | integer | No | Expert 重试次数 |
+| `reflector_retries` | integer | No | Reflector 重试次数 |
+| `result` | string | No | 结果 |
+
+Response JSON (success):
+
+```json
+{
+  "code": 200,
+  "message": "created",
+  "data": {
+    "id": 1
+  }
+}
+```
+
+Example:
+
+```bash
+curl -i -X POST http://localhost:8001/api/review_slice \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "project_id": "my-project",
+    "mr_iid": "123",
+    "start_time": "2026-06-30 10:00:00",
+    "review_id": "review-001",
+    "expert_model_name": "gpt-4",
+    "reflector_model_name": "gpt-3.5-turbo",
+    "expert_duration": 15.5,
+    "reflector_duration": 8.2,
+    "expert_comments": 5,
+    "reflector_passed": 3,
+    "expert_retries": 1,
+    "result": "passed"
+  }'
+```
+
+## Review Summary Create API
+
+```http
+POST /api/review_summary
+```
+
+创建 ReviewSummary 表记录，用于存储 MR live review 的汇总统计数据。
+
+Request body (JSON):
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_id` | string | **Yes** | 项目ID |
+| `mr_iid` | string | **Yes** | Merge Request IID |
+| `start_time` | string | **Yes** | 开始时间（格式：YYYY-MM-DD HH:MM:SS） |
+| `review_id` | string | **Yes** | Review ID |
+| `expert_model_name` | string | **Yes** | Expert 模型名称 |
+| `reflector_model_name` | string | **Yes** | Reflector 模型名称 |
+| `file_modified_count` | integer | No | 修改文件数 |
+| `total_duration` | float | No | 总时长（秒） |
+| `slice_count` | integer | No | Slice 数量 |
+| `expert_avg_duration` | float | No | Expert 平均时长（秒） |
+| `expert_trigger_count` | integer | No | Expert 触发次数 |
+| `expert_total_comments` | integer | No | Expert 总评论数 |
+| `expert_avg_comments` | float | No | Expert 平均评论数 |
+| `expert_total_retries` | integer | No | Expert 总重试次数 |
+| `reflector_avg_duration` | float | No | Reflector 平均时长（秒） |
+| `reflector_trigger_count` | integer | No | Reflector 触发次数 |
+| `reflector_total_comments` | integer | No | Reflector 总评论数 |
+| `reflector_avg_comments` | float | No | Reflector 平均评论数 |
+| `reflector_total_retries` | integer | No | Reflector 总重试次数 |
+| `reflector_total_passed` | integer | No | Reflector 总通过数 |
+| `timeout` | boolean | No | 是否超时（默认 false） |
+
+Response JSON (success):
+
+```json
+{
+  "code": 200,
+  "message": "created",
+  "data": {
+    "id": 1
+  }
+}
+```
+
+Example:
+
+```bash
+curl -i -X POST http://localhost:8001/api/review_summary \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "project_id": "my-project",
+    "mr_iid": "123",
+    "start_time": "2026-06-30 10:00:00",
+    "review_id": "review-001",
+    "expert_model_name": "gpt-4",
+    "reflector_model_name": "gpt-3.5-turbo",
+    "file_modified_count": 10,
+    "total_duration": 120.5,
+    "slice_count": 5,
+    "expert_avg_duration": 15.2,
+    "expert_trigger_count": 5,
+    "expert_total_comments": 25,
+    "expert_avg_comments": 5.0,
+    "expert_total_retries": 3,
+    "reflector_avg_duration": 8.1,
+    "reflector_trigger_count": 5,
+    "reflector_total_comments": 15,
+    "reflector_avg_comments": 3.0,
+    "reflector_total_retries": 1,
+    "reflector_total_passed": 12,
+    "timeout": false
+  }'
+```
+
