@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 from django.db.models import F
 
-from router.models import Model
+from router.models import Model, Server
 
 
 class ModelRepository:
@@ -82,5 +82,17 @@ class ModelRepository:
 
     @staticmethod
     def list_online() -> list[Model]:
-        """List all models that are not deprecated (deprecation is null)."""
-        return list(Model.objects.filter(deprecation__isnull=True).order_by("id"))
+        """Models shown in the dashboard: models backed by at least one online server.
+
+        Based on the servers table rather than ``deprecation`` so that a model
+        whose ``deprecation`` is set as an access-control word (blocking normal
+        users by name, while still serving VIP / auto requests) is not hidden
+        from the dashboard as long as it has live servers behind it.
+        """
+        online_model_ids = (
+            Server.objects.filter(deleted_at__isnull=True, is_online=True)
+            .values_list("model_id", flat=True)
+            .order_by("model_id")
+            .distinct()
+        )
+        return list(Model.objects.filter(id__in=online_model_ids).order_by("id"))
