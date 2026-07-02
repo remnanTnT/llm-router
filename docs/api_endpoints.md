@@ -1564,6 +1564,154 @@ Notes:
 - Only valid, non-deleted user and department records are included
 - Internal routing requests (`ip_id=0`) are excluded from results
 
+## Export Access Stats by Department API
+
+```http
+GET /api/access_stats_by_department/export
+```
+
+Exports access statistics by department as a CSV file. Uses the same query logic as the `access_stats_by_department` endpoint but returns a downloadable CSV instead of JSON.
+
+Query parameters:
+
+- `start_time`: Start time in Beijing timezone (format: `YYYY-MM-DD HH:mm:ss`)
+- `end_time`: End time in Beijing timezone (format: `YYYY-MM-DD HH:mm:ss`)
+- `dept1`: Level 1 department filter (optional; use `all` or omit to include all)
+- `dept2`: Level 2 department filter (optional; use `all` or omit to include all)
+- `dept3`: Level 3 department filter (optional; use `all` or omit to include all)
+- `dept4`: Level 4 department filter (optional; use `all` or omit to include all)
+
+Note: Pagination parameters (`page`, `page_size`) are NOT supported for this endpoint. All matching records are exported.
+
+CSV file format:
+
+| Column | Description |
+|--------|-------------|
+| IP地址 | IP address |
+| 访问次数 | Number of successful requests |
+| 输入Token | Total input tokens (final_prefix_cache + input_token_cnt) |
+| 输出Token | Total output tokens (output_token_cnt) |
+| 用户姓名 | User name |
+| 用户职务 | User role/position |
+| 员工工号 | Employee number |
+| 一级部门 | Level 1 department |
+| 二级部门 | Level 2 department |
+| 三级部门 | Level 3 department |
+| 四级部门 | Level 4 department |
+
+File naming: `access_stats_{start_time}_{end_time}.csv` (timestamps formatted as `YYYYMMDD_HHMMSS`)
+
+Example - export all departments:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department/export?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59' -o access_stats.csv
+```
+
+Example - export filtered by department:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department/export?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&dept1=技术部' -o tech_dept_stats.csv
+```
+
+Notes:
+
+- CSV uses UTF-8 encoding with BOM for Excel compatibility
+- Data is sorted by access_count descending (highest first)
+- Same filtering logic as the JSON endpoint
+
+## Department Cascade API
+
+```http
+GET /api/department/cascade
+```
+
+Returns department hierarchy in cascade format for frontend cascading selectors.
+
+Query parameters (optional):
+
+- `start_time`: Start time in Beijing timezone (format: `YYYY-MM-DD HH:mm:ss`)
+- `end_time`: End time in Beijing timezone (format: `YYYY-MM-DD HH:mm:ss`)
+
+If time parameters are not provided, returns all valid departments. If time parameters are provided, only returns departments that have access records within that time range.
+
+Response format:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "options": [
+      {
+        "value": "技术部",
+        "label": "技术部",
+        "children": [
+          {
+            "value": "研发中心",
+            "label": "研发中心",
+            "children": [
+              {
+                "value": "后端组",
+                "label": "后端组",
+                "children": [
+                  {
+                    "value": "平台研发",
+                    "label": "平台研发"
+                  },
+                  {
+                    "value": "业务研发",
+                    "label": "业务研发"
+                  }
+                ]
+              },
+              {
+                "value": "前端组",
+                "label": "前端组",
+                "children": []
+              }
+            ]
+          },
+          {
+            "value": "运维中心",
+            "label": "运维中心",
+            "children": []
+          }
+        ]
+      },
+      {
+        "value": "产品部",
+        "label": "产品部",
+        "children": []
+      }
+    ]
+  }
+}
+```
+
+Field descriptions:
+
+- `value`: Department name (used as filter value)
+- `label`: Department name (display text)
+- `children`: Array of sub-department objects (empty array if no sub-departments)
+
+Example - get all departments:
+
+```bash
+curl 'http://localhost:8001/api/department/cascade'
+```
+
+Example - get departments with access in time range:
+
+```bash
+curl 'http://localhost:8001/api/department/cascade?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59'
+```
+
+Notes:
+
+- Departments are sorted alphabetically at each level
+- Empty department fields are excluded from the cascade
+- Only valid, non-deleted department records are included
+- When time range is specified, only departments with active IPs that have successful requests are returned
+
 ## Review Slice Create API
 
 ```http

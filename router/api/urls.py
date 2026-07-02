@@ -36,6 +36,8 @@ urlpatterns = [
     path("ai_assistant_user_feedback/list", views.ai_assistant_user_feedback_list),
     path("ai_assistant_user_feedback/update", views.update_ai_assistant_user_feedback),
     path("access_stats_by_department", views.access_stats_by_department),
+    path("access_stats_by_department/export", views.export_access_stats_csv),
+    path("department/cascade", views.department_cascade),
     path("whitelist/list", views.whitelist_list),
     path("ip/list", views.ip_list_with_user_info),
     path("codehub_review/stats", views.codehub_review_stats),
