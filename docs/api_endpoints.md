@@ -208,7 +208,7 @@ curl 'http://localhost:8001/api/whitelist/list?page=1&page_size=10'
 GET /api/ip/list
 ```
 
-Retrieves IP addresses with concurrent multiplier and associated user/department information. Supports optional pagination and filtering.
+Retrieves IP addresses with concurrent multiplier and associated user/department information. Supports optional pagination and filtering. Results are sorted by concurrent_multiplier in descending order (highest concurrent multiplier first).
 
 Query parameters (all optional):
 
@@ -1469,7 +1469,7 @@ curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback/update \
 GET /api/access_stats_by_department
 ```
 
-Aggregates successful request counts by IP address with associated user and department information. Filters results by department levels when provided.
+Aggregates successful request counts by IP address with associated user and department information. Filters results by department levels when provided. Results are sorted by access_count in descending order (highest access count first).
 
 Query parameters:
 
@@ -1498,6 +1498,8 @@ Response format:
     {
       "ip": "192.168.1.100",
       "access_count": 1520,
+      "input_token": 1250000,
+      "output_token": 380000,
       "user_name": "张三",
       "user_charge": "产品经理",
       "employee_no": "EMP001",
@@ -1509,6 +1511,8 @@ Response format:
     {
       "ip": "192.168.1.101",
       "access_count": 890,
+      "input_token": 780000,
+      "output_token": 210000,
       "user_name": "李四",
       "user_charge": "开发工程师",
       "employee_no": "EMP002",
@@ -1523,6 +1527,17 @@ Response format:
   "end_time": "2026-06-25 23:59:59"
 }
 ```
+
+Field descriptions:
+
+- `ip`: IP address
+- `access_count`: Number of successful requests from this IP
+- `input_token`: Total input tokens (final_prefix_cache + input_token_cnt) for this IP
+- `output_token`: Total output tokens (output_token_cnt) for this IP
+- `user_name`: User name associated with this IP
+- `user_charge`: User role/position
+- `employee_no`: Employee number
+- `dept1`-`dept4`: Department hierarchy levels
 
 Example - query all departments:
 

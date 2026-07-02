@@ -1328,7 +1328,9 @@ def access_stats_by_department(request):
     - dept4: 四级部门（可选，"all"表示所有部门）
 
     返回：
-    - 按IP聚合的访问统计，包含用户信息和部门信息
+    - 按IP聚合的访问统计，包含用户信息、部门信息和token统计
+    - input_token: final_prefix_cache + input_token_cnt 的总和
+    - output_token: output_token_cnt 的总和
     """
     parsed = _time_range_or_error(request)
     if isinstance(parsed, JsonResponse):

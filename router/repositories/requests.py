@@ -415,7 +415,9 @@ class RequestRepository:
             dept4: 四级部门，"all"表示所有
 
         Returns:
-            包含ip、access_count、user_name、user_charge、employee_no、dept1-4的字典列表
+            包含ip、access_count、input_token、output_token、user_name、user_charge、employee_no、dept1-4的字典列表
+            input_token = final_prefix_cache + input_token_cnt 的总和
+            output_token = output_token_cnt 的总和
         """
         from router.models import Ips, UserIP, Department
 
@@ -429,11 +431,22 @@ class RequestRepository:
                 ip_id__isnull=False,
             )
             .values("ip_id")
-            .annotate(access_count=models.Count("id"))
+            .annotate(
+                access_count=models.Count("id"),
+                input_token=models.Sum(models.F("final_prefix_cache") + models.F("input_token_cnt")),
+                output_token=models.Sum("output_token_cnt"),
+            )
         )
 
         # 获取聚合结果
-        ip_counts = {row["ip_id"]: row["access_count"] for row in qs}
+        ip_counts = {
+            row["ip_id"]: {
+                "access_count": row["access_count"],
+                "input_token": row["input_token"] or 0,
+                "output_token": row["output_token"] or 0,
+            }
+            for row in qs
+        }
 
         if not ip_counts:
             return []
@@ -479,7 +492,7 @@ class RequestRepository:
 
         # 组装结果并应用部门过滤
         results = []
-        for ip_id, access_count in ip_counts.items():
+        for ip_id, stats in ip_counts.items():
             user_info = user_ips_map.get(ip_id, {})
             department_id = user_info.get("department_id")
             dept_info = departments_map.get(department_id, {}) if department_id else {}
@@ -496,7 +509,9 @@ class RequestRepository:
 
             results.append({
                 "ip": ips_map.get(ip_id, ""),
-                "access_count": access_count,
+                "access_count": stats["access_count"],
+                "input_token": stats["input_token"],
+                "output_token": stats["output_token"],
                 "user_name": user_info.get("user_name", ""),
                 "user_charge": user_info.get("user_charge", ""),
                 "employee_no": user_info.get("employee_no", ""),
@@ -505,5 +520,8 @@ class RequestRepository:
                 "dept3": dept_info.get("dept3", ""),
                 "dept4": dept_info.get("dept4", ""),
             })
+
+        # 按访问次数从高到低排序
+        results.sort(key=lambda x: x["access_count"], reverse=True)
 
         return results
