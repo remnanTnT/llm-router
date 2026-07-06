@@ -129,9 +129,7 @@ class AutoRouteAlgorithm:
         if is_vip_channel or not self.should_route_small_request(parsed):
             return model, None
 
-        routing_model = self._get_small_request_routing_model(
-            parsed.estimated_full_body_tokens
-        )
+        routing_model = self._get_small_request_routing_model()
         if routing_model is None:
             return model, None
 
@@ -153,14 +151,9 @@ class AutoRouteAlgorithm:
         )
 
     @staticmethod
-    def _get_small_request_routing_model(estimate_tokens: int = 0):
+    def _get_small_request_routing_model():
         for routing_model in ModelRepository.get_routing_models():
-            candidates = ServerRepository.list_by_model_id(
-                routing_model.id,
-                vip=False,
-                estimate_tokens=estimate_tokens,
-            )
-            if candidates:
+            if ServerRepository.list_by_model_id(routing_model.id, vip=False):
                 return routing_model
         return None
 
@@ -331,7 +324,6 @@ class AutoRouteAlgorithm:
                 ServerRepository.list_by_model_id(
                     routing_model.id,
                     vip=False,
-                    estimate_tokens=0,
                 )
             )
 
@@ -697,6 +689,7 @@ class AutoRouteAlgorithm:
         context: ServerSelectionContext,
         body: bytes,
         model,
+        failed_context_window: int | None,
         status_code: int,
         fail_reason: str,
     ) -> ContextOverflowDecision:
@@ -705,7 +698,7 @@ class AutoRouteAlgorithm:
             return ContextOverflowDecision(body=body)
         if not model or model.model_name == fallback_name:
             return ContextOverflowDecision(body=body)
-        if not self.check_context_overflow(status_code, model, fail_reason):
+        if not self.check_context_overflow(status_code, failed_context_window, fail_reason):
             return ContextOverflowDecision(body=body)
 
         fallback_model = ModelRepository.get_by_name(fallback_name)
@@ -724,10 +717,11 @@ class AutoRouteAlgorithm:
         return ContextOverflowDecision(model=fallback_model, body=body)
 
     @staticmethod
-    def check_context_overflow(status_code: int, model: Any, fail_reason: str) -> bool:
-        if status_code == 400 and model and model.max_context_window:
-            return str(model.max_context_window) in fail_reason
-        return False
+    def check_context_overflow(status_code: int, context_window: int | None, fail_reason: str) -> bool:
+        # The upstream server reports its own configured context window in the
+        # 400 error body when a request exceeds it. A NULL context window means
+        # the server advertises no limit, so it never signals overflow.
+        return status_code == 400 and bool(context_window) and str(context_window) in fail_reason
 
     @staticmethod
     def update_body_model(

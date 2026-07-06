@@ -54,7 +54,6 @@ ALTER TABLE models ADD COLUMN vip INTEGER NULL;
 ALTER TABLE models ADD COLUMN deprecation VARCHAR(500) NULL;
 ALTER TABLE models ADD COLUMN is_routing_model BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE models ADD COLUMN auto BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE models ADD COLUMN max_context_window INTEGER NOT NULL DEFAULT 204800;
 ALTER TABLE models ADD COLUMN complexity_min INTEGER NULL;
 ALTER TABLE models ADD COLUMN complexity_max INTEGER NULL;
 ALTER TABLE models ADD COLUMN multimodal BOOLEAN NOT NULL DEFAULT FALSE;
@@ -71,8 +70,6 @@ ALTER TABLE models ADD COLUMN multimodal BOOLEAN NOT NULL DEFAULT FALSE;
 `complexity_min` and `complexity_max` are text auto-routing target bounds. Both must be non-NULL, between 1 and 10, and `complexity_min <= complexity_max`. A returned complexity score must match exactly one target model; otherwise the router uses `router.fallback_model` where applicable and records the reason in `requests.router_result`.
 
 `multimodal` marks the model as eligible for auto-routed requests that contain `image_url` chat parts.
-
-`max_context_window` is used for context-overflow fallback. When a true auto-selected model returns HTTP 400 and the failure reason contains this value, the router can retry with `router.fallback_model`.
 
 ## `servers` Table
 
@@ -120,7 +117,7 @@ CREATE INDEX servers_online_model_idx
 
 `vip` and `vip_cooldown` are router-managed. The router promotes and demotes servers automatically based on VIP request load.
 
-`context_window` is an optional per-server request-size ceiling. If it is set, candidate selection excludes that server when `requests.estimate_tokens` is larger than the context window.
+`context_window` is an optional per-server context-window ceiling. It is not used to pre-filter candidate servers. When an upstream rejects a request with an overflow error whose message contains this value, the router retries on a larger-window server of the same model (or, for auto-selected models, the long-context `router.fallback_model`). `NULL` means unlimited.
 
 `weight` is the server's capacity multiplier (default 1). Server selection compares normalized load `workload / weight`, so a server with weight 3 is chosen over a weight-1 server as long as its own workload is below three times the other's. VIP channel candidates are restricted to weight-1 servers.
 
@@ -148,7 +145,7 @@ ALTER TABLE requests ADD COLUMN ttft BIGINT NULL;
 
 `router_result` stores auto-routing and small-request-routing decisions, prefixed by the originally requested model name. Examples: `auto:complexity:7`, `AUTO:cache_hit`, `source-model:small_request_routing`, `auto:routing_failed:missing_routing_server:no available routing server`.
 
-`estimate_tokens` stores the fast token estimate from the original request body. It is used for `servers.context_window` filtering.
+`estimate_tokens` stores the fast token estimate from the original request body. It is used for small-request routing and VIP scale-down; it is not used to pre-filter candidate servers (server context-window handling is reactionary).
 
 `model_choosing_latency` stores elapsed milliseconds for model choosing when the request uses true auto selection or small-request routing.
 

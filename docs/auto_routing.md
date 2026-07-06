@@ -17,14 +17,13 @@ Configure model rows with these fields:
 | `auto` | Marks a concrete model name as an auto-routing entry point on the normal port. It does not control target eligibility. |
 | `complexity_min`, `complexity_max` | Inclusive 1-10 target range for text auto routing. Both must be set for the model to be a text target. |
 | `multimodal` | Marks the model as eligible for image-containing auto requests. |
-| `max_context_window` | Used for context-overflow fallback detection. |
 
 Configure server rows with:
 
 | Field | Meaning |
 |-------|---------|
 | `model_id` | The model served by this upstream. |
-| `context_window` | Optional per-server request-size ceiling. Servers with a smaller context window than the estimated request tokens are excluded. |
+| `context_window` | Optional per-server context-window ceiling. Not used to pre-filter servers. When an upstream rejects a request with an overflow error that contains this value, the router retries on a larger-window server of the same model (or the fallback model). `NULL` means unlimited. |
 | `vip` | Routing-classifier calls and small-request routing use non-VIP servers. VIP-channel concrete model requests do not enter auto selection. |
 
 ## Configuration
@@ -145,9 +144,12 @@ For each accepted proxy request, the router creates a `requests` row in `process
 
 ## Context-Overflow Fallback
 
-If a true auto-selected model returns HTTP 400 and the failure reason contains that model's `max_context_window` value, the router retries with `router.fallback_model`.
+The router does not pre-filter servers by an estimated request size. A request is sent to the selected server and, if that server rejects it for exceeding its context window (HTTP 400 whose error body contains the server's own `servers.context_window` value), the router retries:
 
-This only applies to true auto selection. Explicit concrete model requests do not switch to the fallback model on context overflow.
+1. First on a server of the **same model** whose `servers.context_window` is strictly larger (a `NULL` context window is treated as unlimited). The chooser skips servers already attempted for this request.
+2. Only when no larger-window same-model server exists does it fall back to `router.fallback_model`.
+
+Step 2 only applies to true auto selection. Explicit concrete model requests retry on larger-window same-model servers (step 1) but do not switch to the fallback model.
 
 ## Request Records
 

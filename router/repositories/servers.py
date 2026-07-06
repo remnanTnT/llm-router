@@ -15,11 +15,14 @@ _ADVISORY_LOCK_KEY = 8723461
 
 class ServerRepository:
     @staticmethod
-    def list_by_model_id(model_id: int | None, vip: bool | None = None, estimate_tokens: int = 0) -> list[Server]:
+    def list_by_model_id(model_id: int | None, vip: bool | None = None, min_context_window: int = 0) -> list[Server]:
         """Return routable servers: online + (closed or cooldown-expired open/half_open).
 
         ``vip``: when ``True`` only VIP servers, when ``False`` only non-VIP servers,
         when ``None`` (default) both.
+        ``min_context_window``: when > 0, only servers whose context window is
+        strictly larger than this (NULL context window is treated as unlimited).
+        Used to retry on a larger-window server after a real context overflow.
         """
         now = timezone.now()
         queryset = Server.objects.filter(deleted_at__isnull=True, is_online=True)
@@ -31,9 +34,9 @@ class ServerRepository:
             queryset = queryset.filter(vip=True)
         elif vip is False:
             queryset = queryset.filter(vip=False)
-            
-        if estimate_tokens > 0:
-            queryset = queryset.filter(Q(context_window__gte=estimate_tokens) | Q(context_window__isnull=True))
+
+        if min_context_window > 0:
+            queryset = queryset.filter(Q(context_window__gt=min_context_window) | Q(context_window__isnull=True))
             
         servers = list(queryset.order_by("id"))
         return ServerRepository._filter_routable(servers, now)
