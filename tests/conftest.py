@@ -44,8 +44,6 @@ def api_test_tables(django_db_setup, django_db_blocker):
                 schema_editor.add_field(Model, Model._meta.get_field("is_routing_model"))
             if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "auto"):
                 schema_editor.add_field(Model, Model._meta.get_field("auto"))
-            if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "max_context_window"):
-                schema_editor.add_field(Model, Model._meta.get_field("max_context_window"))
             if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "complexity_min"):
                 schema_editor.add_field(Model, Model._meta.get_field("complexity_min"))
             if Model._meta.db_table in connection.introspection.table_names() and not has_column("models", "complexity_max"):

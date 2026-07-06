@@ -25,12 +25,12 @@ class VIPChannelService:
         threshold = getattr(model, "vip", None)
         return threshold is not None and threshold > 0
 
-    def _vip_servers(self, model_id: int, vip: bool, estimate_tokens: int = 0) -> list[Any]:
+    def _vip_servers(self, model_id: int, vip: bool) -> list[Any]:
         """VIP only serves baseline-capacity (weight == 1) servers."""
-        servers = ServerRepository.list_by_model_id(model_id, vip=vip, estimate_tokens=estimate_tokens)
+        servers = ServerRepository.list_by_model_id(model_id, vip=vip)
         return [s for s in servers if effective_weight(s) == 1]
 
-    def select_candidates(self, model, estimate_tokens: int = 0) -> tuple[list[Any], bool]:
+    def select_candidates(self, model) -> tuple[list[Any], bool]:
         """Pick server candidates for a VIP request and run scale-up.
 
         Returns ``(candidates, served_as_vip)``. ``served_as_vip`` is False only
@@ -40,8 +40,8 @@ class VIPChannelService:
         ServerRepository.demote_expired_cooldowns(self.cooldown_seconds, model.id)
 
         threshold = int(model.vip or 0)
-        vip_set = self._vip_servers(model.id, vip=True, estimate_tokens=estimate_tokens)
-        normal = self._vip_servers(model.id, vip=False, estimate_tokens=estimate_tokens)
+        vip_set = self._vip_servers(model.id, vip=True)
+        normal = self._vip_servers(model.id, vip=False)
 
         if not vip_set:
             if len(normal) > self.min_normal_servers:
@@ -49,8 +49,8 @@ class VIPChannelService:
                 if ServerRepository.promote_to_vip(promoted):
                     return [promoted], True
                 # Lost the race: re-list and continue.
-                vip_set = self._vip_servers(model.id, vip=True, estimate_tokens=estimate_tokens)
-                normal = self._vip_servers(model.id, vip=False, estimate_tokens=estimate_tokens)
+                vip_set = self._vip_servers(model.id, vip=True)
+                normal = self._vip_servers(model.id, vip=False)
                 if not vip_set:
                     return normal, False
             else:
@@ -76,14 +76,14 @@ class VIPChannelService:
 
         return vip_set, True
 
-    def maybe_scale_down(self, model, estimate_tokens: int = 0) -> None:
+    def maybe_scale_down(self, model) -> None:
         if not self.is_vip_eligible(model):
             return
 
         ServerRepository.demote_expired_cooldowns(self.cooldown_seconds, model.id)
 
         threshold = int(model.vip or 0)
-        vip_set = self._vip_servers(model.id, vip=True, estimate_tokens=estimate_tokens)
+        vip_set = self._vip_servers(model.id, vip=True)
         if not vip_set:
             return
 
