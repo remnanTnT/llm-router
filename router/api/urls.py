@@ -33,6 +33,8 @@ urlpatterns = [
     path("codehub_review", views.upsert_codehub_review),
     path("concurrent_multiplier/update", views.update_concurrent_multiplier),
     path("ai_assistant_user_feedback", views.create_ai_assistant_user_feedback),
+    path("ai_assistant_user_feedback/list", views.ai_assistant_user_feedback_list),
+    path("ai_assistant_user_feedback/update", views.update_ai_assistant_user_feedback),
     path("access_stats_by_department", views.access_stats_by_department),
     path("whitelist/list", views.whitelist_list),
     path("ip/list", views.ip_list_with_user_info),

@@ -49,6 +49,7 @@ class IPRepository:
 
         Returns:
             (数据列表, 总记录数)
+            结果按并发数(concurrent_multiplier)从高到低排序
         """
         from router.models import UserIP, Department
 
@@ -71,8 +72,8 @@ class IPRepository:
         # 获取总数
         total = queryset.count()
 
-        # 排序
-        queryset = queryset.order_by('id')
+        # 排序：按并发数从高到低
+        queryset = queryset.order_by('-concurrent_multiplier')
 
         # 如果提供了分页参数，应用分页
         if page is not None and page_size is not None:

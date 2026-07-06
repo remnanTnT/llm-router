@@ -208,7 +208,7 @@ curl 'http://localhost:8001/api/whitelist/list?page=1&page_size=10'
 GET /api/ip/list
 ```
 
-Retrieves IP addresses with concurrent multiplier and associated user/department information. Supports optional pagination and filtering.
+Retrieves IP addresses with concurrent multiplier and associated user/department information. Supports optional pagination and filtering. Results are sorted by concurrent_multiplier in descending order (highest concurrent multiplier first).
 
 Query parameters (all optional):
 
@@ -1376,7 +1376,90 @@ curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback \
     "reporter": "张三",
     "reported_at": "2026-06-25 10:00:00",
     "status": "open",
-    "priority": "高"
+"priority": "高"
+  }'
+  ```
+
+```http
+POST /api/ai_assistant_user_feedback/update
+```
+
+Updates an existing AI Assistant user feedback record by ID. At least one field must be provided for update.
+
+Required field:
+
+- `id`: Record ID (integer)
+
+Optional update fields (at least one required):
+
+- `domain`: Domain (one of: 知识管理, 辅助设计, 代码分析, 问题定位, Agent)
+- `tool_version`: Tool version
+- `issue_description`: Issue description
+- `reporter`: Reporter name
+- `reported_at`: Reported time (format: YYYY-MM-DD HH:MM:SS)
+- `priority`: Priority (one of: 高, 中, 低)
+- `assignee`: Assignee
+- `status`: Status (one of: open, close, cancel)
+- `estimated_resolution_at`: Estimated resolution time (format: YYYY-MM-DD HH:MM:SS)
+- `actual_resolution_at`: Actual resolution time (format: YYYY-MM-DD HH:MM:SS)
+- `bugfix_version`: Bugfix version
+- `progress_tracking`: Progress tracking notes
+- `remarks`: Remarks
+
+Response format:
+
+```json
+{
+  "code": 200,
+  "message": "updated",
+  "data": {
+    "id": 1,
+    "domain": "代码分析",
+    "tool_version": "v1.2.0",
+    "issue_description": "代码分析功能响应缓慢",
+    "reporter": "张三",
+    "reported_at": "2026-06-25 10:00:00",
+    "priority": "高",
+    "assignee": "李四",
+    "status": "close",
+    "estimated_resolution_at": "2026-06-30 18:00:00",
+    "actual_resolution_at": "2026-06-28 16:30:00",
+    "bugfix_version": "v1.2.1",
+    "progress_tracking": "问题已定位并修复",
+    "remarks": "优化了查询性能",
+    "updated_at": "2026-06-28 16:30:00"
+  }
+}
+```
+
+Error responses:
+
+- `400`: Invalid request (missing id, invalid field values, or no fields provided for update)
+- `404`: Record not found
+- `500`: Server error
+
+Example - update status and assignee:
+
+```bash
+curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback/update \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": 1,
+    "status": "close",
+    "assignee": "李四",
+    "actual_resolution_at": "2026-06-28 16:30:00",
+    "bugfix_version": "v1.2.1"
+  }'
+```
+
+Example - update priority:
+
+```bash
+curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback/update \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": 1,
+    "priority": "中"
   }'
 ```
 
@@ -1386,7 +1469,7 @@ curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback \
 GET /api/access_stats_by_department
 ```
 
-Aggregates successful request counts by IP address with associated user and department information. Filters results by department levels when provided.
+Aggregates successful request counts by IP address with associated user and department information. Filters results by department levels when provided. Results are sorted by access_count in descending order (highest access count first).
 
 Query parameters:
 
@@ -1415,6 +1498,8 @@ Response format:
     {
       "ip": "192.168.1.100",
       "access_count": 1520,
+      "input_token": 1250000,
+      "output_token": 380000,
       "user_name": "张三",
       "user_charge": "产品经理",
       "employee_no": "EMP001",
@@ -1426,6 +1511,8 @@ Response format:
     {
       "ip": "192.168.1.101",
       "access_count": 890,
+      "input_token": 780000,
+      "output_token": 210000,
       "user_name": "李四",
       "user_charge": "开发工程师",
       "employee_no": "EMP002",
@@ -1440,6 +1527,17 @@ Response format:
   "end_time": "2026-06-25 23:59:59"
 }
 ```
+
+Field descriptions:
+
+- `ip`: IP address
+- `access_count`: Number of successful requests from this IP
+- `input_token`: Total input tokens (final_prefix_cache + input_token_cnt) for this IP
+- `output_token`: Total output tokens (output_token_cnt) for this IP
+- `user_name`: User name associated with this IP
+- `user_charge`: User role/position
+- `employee_no`: Employee number
+- `dept1`-`dept4`: Department hierarchy levels
 
 Example - query all departments:
 
@@ -1599,5 +1697,117 @@ curl -i -X POST http://localhost:8001/api/review_summary \
     "reflector_total_passed": 12,
     "timeout": false
   }'
+```
+
+## AI Assistant User Feedback List API
+
+```http
+GET /api/ai_assistant_user_feedback/list
+```
+
+查询 `ai_assistant_user_feedback` 表数据列表，支持多条件过滤和分页。所有参数均为可选，若无参数则返回全量数据（分页）。
+
+Query parameters (all optional):
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `create_start_time` | string | 创建时间开始范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS） |
+| `create_end_time` | string | 创建时间结束范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS） |
+| `domain` | string | 领域筛选（可选值：知识管理、辅助设计、代码分析、问题定位、Agent） |
+| `status` | string | 状态筛选（可选值：open、close、cancel） |
+| `reporter` | string | 报告人筛选（支持模糊匹配） |
+| `assignee` | string | 指派人筛选（支持模糊匹配） |
+| `priority` | string | 优先级筛选（可选值：高、中、低） |
+| `page` | integer | 页码（默认 1） |
+| `page_size` | integer | 每页大小（默认 10，最大 100） |
+
+Response JSON:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "total_count": 50,
+    "total_pages": 5,
+    "current_page": 1,
+    "page_size": 10,
+    "has_next": true,
+    "has_previous": false,
+    "items": [
+      {
+        "id": 1,
+        "domain": "知识管理",
+        "tool_version": "v1.2.0",
+        "issue_description": "搜索功能响应慢",
+        "reporter": "张三",
+        "reported_at": "2026-06-15T10:30:00+08:00",
+        "priority": "高",
+        "assignee": "李四",
+        "status": "open",
+        "estimated_resolution_at": "2026-06-20T18:00:00+08:00",
+        "actual_resolution_at": null,
+        "bugfix_version": null,
+        "progress_tracking": "已定位问题，正在优化",
+        "remarks": "优先处理",
+        "created_at": "2026-06-15T10:30:00+08:00",
+        "updated_at": "2026-06-16T09:00:00+08:00"
+      }
+    ]
+  }
+}
+```
+
+Example - get all feedback with default pagination:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list'
+```
+
+Example - filter by domain:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?domain=知识管理'
+```
+
+Example - filter by status:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?status=open'
+```
+
+Example - filter by time range:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?create_start_time=2026-06-01%2000:00:00&create_end_time=2026-06-30%2023:59:59'
+```
+
+Example - filter by reporter (fuzzy match):
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?reporter=张'
+```
+
+Example - filter by assignee (fuzzy match):
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?assignee=李'
+```
+
+Example - filter by priority:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?priority=高'
+```
+
+Example - custom pagination:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?page=2&page_size=20'
+```
+
+Example - combined filters:
+
+```bash
+curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?domain=知识管理&status=open&priority=高&page=1&page_size=20'
 ```
 

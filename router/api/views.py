@@ -1142,6 +1142,178 @@ def create_ai_assistant_user_feedback(request):
         return JsonResponse({"code": 500, "error": str(e)}, status=500)
 
 
+@require_http_methods(["POST"])
+def update_ai_assistant_user_feedback(request):
+    """
+    根据 ID 更新 AI Assistant 用户反馈记录。
+
+    必传参数：
+    - id: 记录 ID
+
+    可选修改参数（至少提供一个）：
+    - domain: 领域（可选值：知识管理、辅助设计、代码分析、问题定位、Agent）
+    - tool_version: 工具版本
+    - issue_description: 问题描述
+    - reporter: 报告人
+    - reported_at: 报告时间（格式：YYYY-MM-DD HH:MM:SS）
+    - priority: 优先级（可选值：高、中、低）
+    - assignee: 指派人
+    - status: 状态（可选值：open、close、cancel）
+    - estimated_resolution_at: 预计解决时间（格式：YYYY-MM-DD HH:MM:SS）
+    - actual_resolution_at: 实际解决时间（格式：YYYY-MM-DD HH:MM:SS）
+    - bugfix_version: 修复版本
+    - progress_tracking: 进度跟踪
+    - remarks: 备注
+
+    返回：
+    - 更新成功返回更新后的记录信息
+    - 记录不存在返回 404
+    - 参数错误返回 400
+    """
+    from datetime import datetime
+    from router.models import AiAssistantUserFeedback
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # 验证必传参数 id
+    feedback_id = data.get("id")
+    if feedback_id is None:
+        return _bad_request("id is required")
+
+    try:
+        feedback_id = int(feedback_id)
+    except (TypeError, ValueError):
+        return _bad_request("id must be an integer")
+
+    # 定义允许修改的字段（不包括 id、created_at、updated_at、deleted_at）
+    allowed_fields = {
+        "domain": "choice",
+        "tool_version": "str",
+        "issue_description": "str",
+        "reporter": "str",
+        "reported_at": "datetime",
+        "priority": "choice_optional",
+        "assignee": "str_optional",
+        "status": "choice",
+        "estimated_resolution_at": "datetime_optional",
+        "actual_resolution_at": "datetime_optional",
+        "bugfix_version": "str_optional",
+        "progress_tracking": "str_optional",
+        "remarks": "str_optional",
+    }
+
+    # 验证值范围
+    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+    valid_priorities = ["高", "中", "低"]
+    valid_statuses = ["open", "close", "cancel"]
+
+    # 提取并验证可选字段
+    update_data = {}
+    for field, field_type in allowed_fields.items():
+        if field in data:
+            value = data[field]
+
+            # 处理 datetime 类型字段
+            if field_type in ["datetime", "datetime_optional"]:
+                if value:
+                    try:
+                        # 支持多种 datetime 格式
+                        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                            try:
+                                dt = datetime.strptime(value, fmt)
+                                update_data[field] = timezone.make_aware(dt, timezone.get_current_timezone())
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            return _bad_request(f"{field} format invalid, expected format: YYYY-MM-DD HH:MM:SS")
+                    except Exception as e:
+                        return _bad_request(f"{field} conversion failed: {str(e)}")
+                else:
+                    update_data[field] = None
+
+            # 处理 choice 类型字段
+            elif field_type == "choice":
+                if not value:
+                    return _bad_request(f"{field} cannot be empty")
+                if field == "domain" and value not in valid_domains:
+                    return _bad_request(f"domain must be one of: {', '.join(valid_domains)}")
+                if field == "status" and value not in valid_statuses:
+                    return _bad_request(f"status must be one of: {', '.join(valid_statuses)}")
+                update_data[field] = value
+
+            # 处理可选 choice 类型字段
+            elif field_type == "choice_optional":
+                if value is not None:
+                    if field == "priority" and value not in valid_priorities:
+                        return _bad_request(f"priority must be one of: {', '.join(valid_priorities)}")
+                    update_data[field] = value
+                else:
+                    update_data[field] = None
+
+            # 处理字符串类型字段
+            elif field_type == "str":
+                if not value:
+                    return _bad_request(f"{field} cannot be empty")
+                update_data[field] = value
+
+            # 处理可选字符串类型字段
+            elif field_type in ["str_optional"]:
+                update_data[field] = value if value else None
+
+    # 检查是否至少提供了一个修改字段
+    if not update_data:
+        return _bad_request("at least one field to update is required")
+
+    # 查询记录是否存在
+    try:
+        feedback = AiAssistantUserFeedback.objects.get(id=feedback_id)
+    except AiAssistantUserFeedback.DoesNotExist:
+        return JsonResponse({
+            "code": 404,
+            "error": f"AiAssistantUserFeedback with id {feedback_id} not found"
+        }, status=404)
+
+    # 更新字段
+    for field, value in update_data.items():
+        setattr(feedback, field, value)
+
+    # 更新 updated_at 时间戳
+    feedback.updated_at = timezone.now()
+
+    # 保存更新
+    try:
+        feedback.save()
+    except Exception as e:
+        return JsonResponse({"code": 500, "error": f"update failed: {str(e)}"}, status=500)
+
+    # 返回更新后的记录信息
+    return JsonResponse({
+        "code": 200,
+        "message": "updated",
+        "data": {
+            "id": feedback.id,
+            "domain": feedback.domain,
+            "tool_version": feedback.tool_version,
+            "issue_description": feedback.issue_description,
+            "reporter": feedback.reporter,
+            "reported_at": feedback.reported_at.astimezone(BEIJING_TZ).strftime(TIME_FORMAT) if feedback.reported_at else None,
+            "priority": feedback.priority,
+            "assignee": feedback.assignee,
+            "status": feedback.status,
+            "estimated_resolution_at": feedback.estimated_resolution_at.astimezone(BEIJING_TZ).strftime(TIME_FORMAT) if feedback.estimated_resolution_at else None,
+            "actual_resolution_at": feedback.actual_resolution_at.astimezone(BEIJING_TZ).strftime(TIME_FORMAT) if feedback.actual_resolution_at else None,
+            "bugfix_version": feedback.bugfix_version,
+            "progress_tracking": feedback.progress_tracking,
+            "remarks": feedback.remarks,
+            "updated_at": feedback.updated_at.astimezone(BEIJING_TZ).strftime(TIME_FORMAT) if feedback.updated_at else None,
+        }
+    })
+
+
 @require_http_methods(["GET"])
 def access_stats_by_department(request):
     """
@@ -1156,7 +1328,9 @@ def access_stats_by_department(request):
     - dept4: 四级部门（可选，"all"表示所有部门）
 
     返回：
-    - 按IP聚合的访问统计，包含用户信息和部门信息
+    - 按IP聚合的访问统计，包含用户信息、部门信息和token统计
+    - input_token: final_prefix_cache + input_token_cnt 的总和
+    - output_token: output_token_cnt 的总和
     """
     parsed = _time_range_or_error(request)
     if isinstance(parsed, JsonResponse):
@@ -2072,4 +2246,312 @@ def create_review_summary(request):
         return JsonResponse({"code": 200, "message": "created", "data": {"id": summary_record.id}})
     except Exception as e:
         return JsonResponse({"code": 500, "error": str(e)}, status=500)
+
+
+@require_http_methods(["GET"])
+def ai_assistant_user_feedback_list(request):
+    """
+    查询 AiAssistantUserFeedback 表数据列表（支持多条件过滤和分页）。
+
+    查询参数（全部可选）：
+    - create_start_time: 创建时间开始范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS）
+    - create_end_time: 创建时间结束范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS）
+    - domain: 领域筛选（可选值：知识管理、辅助设计、代码分析、问题定位、Agent）
+    - status: 状态筛选（可选值：open、close、cancel）
+    - reporter: 报告人筛选
+    - assignee: 指派人筛选
+    - priority: 优先级筛选（可选值：高、中、低）
+    - page: 页码（默认为1）
+    - page_size: 每页大小（默认为10，最大100）
+
+    返回：
+    - total_count: 总数据条数
+    - total_pages: 总页数
+    - current_page: 当前页码
+    - page_size: 每页大小
+    - has_next: 是否有下一页
+    - has_previous: 是否有上一页
+    - items: 数据列表，包含所有字段
+    """
+    import json
+    from datetime import datetime
+    from django.core.paginator import Paginator
+    from router.models import AiAssistantUserFeedback
+
+    # 获取筛选参数
+    create_start_time_str = request.GET.get("create_start_time")
+    create_end_time_str = request.GET.get("create_end_time")
+    domain = request.GET.get("domain")
+    status = request.GET.get("status")
+    reporter = request.GET.get("reporter")
+    assignee = request.GET.get("assignee")
+    priority = request.GET.get("priority")
+
+    # 处理筛选参数（去除空白）
+    domain = domain.strip() if domain else None
+    status = status.strip() if status else None
+    reporter = reporter.strip() if reporter else None
+    assignee = assignee.strip() if assignee else None
+    priority = priority.strip() if priority else None
+
+    # 验证 domain 参数
+    if domain:
+        valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+        if domain not in valid_domains:
+            return _bad_request(f"domain must be one of: {', '.join(valid_domains)}")
+
+    # 验证 status 参数
+    if status:
+        valid_statuses = ["open", "close", "cancel"]
+        if status not in valid_statuses:
+            return _bad_request(f"status must be one of: {', '.join(valid_statuses)}")
+
+    # 验证 priority 参数
+    if priority:
+        valid_priorities = ["高", "中", "低"]
+        if priority not in valid_priorities:
+            return _bad_request(f"priority must be one of: {', '.join(valid_priorities)}")
+
+    # 解析分页参数
+    page, page_size, error_msg = _parse_pagination(request, default_page_size=10, max_page_size=100)
+    if error_msg:
+        return _bad_request(error_msg)
+
+    # 解析时间参数
+    create_start_time = None
+    create_end_time = None
+
+    if create_start_time_str:
+        try:
+            create_start_time = datetime.strptime(create_start_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            create_start_time = timezone.make_aware(create_start_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("create_start_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    if create_end_time_str:
+        try:
+            create_end_time = datetime.strptime(create_end_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            create_end_time = timezone.make_aware(create_end_time, BEIJING_TZ)
+        except ValueError:
+            return _bad_request("create_end_time format invalid, expected: YYYY-MM-DD HH:MM:SS")
+
+    # 构建基础查询（排除已删除记录）
+    queryset = AiAssistantUserFeedback.objects.filter(deleted_at__isnull=True)
+
+    # 应用筛选条件
+    if create_start_time:
+        queryset = queryset.filter(created_at__gte=create_start_time)
+
+    if create_end_time:
+        queryset = queryset.filter(created_at__lte=create_end_time)
+
+    if domain:
+        queryset = queryset.filter(domain=domain)
+
+    if status:
+        queryset = queryset.filter(status=status)
+
+    if reporter:
+        queryset = queryset.filter(reporter__icontains=reporter)
+
+    if assignee:
+        queryset = queryset.filter(assignee__icontains=assignee)
+
+    if priority:
+        queryset = queryset.filter(priority=priority)
+
+    # 按创建时间降序排序
+    queryset = queryset.order_by('-created_at')
+
+    # 分页
+    paginator = Paginator(queryset, page_size)
+    page_obj = paginator.page(page)
+
+    # 序列化数据
+    items = []
+    for feedback in page_obj.object_list:
+        items.append({
+            'id': feedback.id,
+            'domain': feedback.domain,
+            'tool_version': feedback.tool_version,
+            'issue_description': feedback.issue_description,
+            'reporter': feedback.reporter,
+            'reported_at': feedback.reported_at.isoformat() if feedback.reported_at else None,
+            'priority': feedback.priority,
+            'assignee': feedback.assignee,
+            'status': feedback.status,
+            'estimated_resolution_at': feedback.estimated_resolution_at.isoformat() if feedback.estimated_resolution_at else None,
+            'actual_resolution_at': feedback.actual_resolution_at.isoformat() if feedback.actual_resolution_at else None,
+            'bugfix_version': feedback.bugfix_version,
+            'progress_tracking': feedback.progress_tracking,
+            'remarks': feedback.remarks,
+            'created_at': feedback.created_at.isoformat() if feedback.created_at else None,
+            'updated_at': feedback.updated_at.isoformat() if feedback.updated_at else None,
+        })
+
+    return JsonResponse({
+        "code": 200,
+        "data": {
+            "total_count": paginator.count,
+            "total_pages": paginator.num_pages,
+            "current_page": page,
+            "page_size": page_size,
+            "has_next": page_obj.has_next(),
+            "has_previous": page_obj.has_previous(),
+            "items": items,
+        }
+    })
+
+
+@require_http_methods(["POST"])
+def update_review_slice(request):
+    """
+    更新 ReviewSlices 记录接口。
+
+    必传参数：
+    - id: 记录ID
+
+    可选修改参数（至少提供一个）：
+    - project_id: 项目ID（字符串）
+    - mr_iid: MR IID（字符串）
+    - start_time: 开始时间（格式：YYYY-MM-DD HH:MM:SS）
+    - review_id: Review ID（字符串）
+    - expert_model_name: Expert 模型名称（字符串）
+    - reflector_model_name: Reflector 模型名称（字符串）
+    - expert_duration: Expert 处理时长（浮点数）
+    - reflector_duration: Reflector 处理时长（浮点数）
+    - expert_comments: Expert 评论数（整数）
+    - reflector_passed: Reflector 通过数（整数）
+    - expert_retries: Expert 重试次数（整数）
+    - reflector_retries: Reflector 重试次数（整数）
+    - result: 结果（字符串）
+
+    返回：
+    - 更新成功返回更新后的记录信息
+    - 记录不存在返回404
+    - 参数错误返回400
+    """
+    from datetime import datetime
+    from router.models import ReviewSlices
+
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return _bad_request("invalid JSON body")
+
+    # 验证必传参数id
+    slice_id = data.get("id")
+    if slice_id is None:
+        return _bad_request("id is required")
+
+    try:
+        slice_id = int(slice_id)
+    except (TypeError, ValueError):
+        return _bad_request("id must be an integer")
+
+    # 检查记录是否存在
+    try:
+        slice_record = ReviewSlices.objects.get(id=slice_id, deleted_at__isnull=True)
+    except ReviewSlices.DoesNotExist:
+        return JsonResponse({"code": 404, "error": "record not found"}, status=404)
+
+    # 定义允许修改的字段及其类型
+    allowed_fields = {
+        "project_id": str,
+        "mr_iid": str,
+        "start_time": "datetime",
+        "review_id": str,
+        "expert_model_name": str,
+        "reflector_model_name": str,
+        "expert_duration": float,
+        "reflector_duration": float,
+        "expert_comments": int,
+        "reflector_passed": int,
+        "expert_retries": int,
+        "reflector_retries": int,
+        "result": str,
+    }
+
+    # 提取并验证可选字段
+    update_data = {}
+    for field, field_type in allowed_fields.items():
+        if field in data:
+            value = data[field]
+
+            # 处理 datetime 类型字段
+            if field_type == "datetime":
+                if value:
+                    try:
+                        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                            try:
+                                dt = datetime.strptime(value, fmt)
+                                update_data[field] = timezone.make_aware(dt, timezone.get_current_timezone())
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            return _bad_request(f"{field} format invalid, expected format: YYYY-MM-DD HH:MM:SS")
+                    except Exception as e:
+                        return _bad_request(f"{field} conversion failed: {str(e)}")
+                else:
+                    update_data[field] = None
+
+            # 处理浮点数类型字段
+            elif field_type == float:
+                if value is not None:
+                    try:
+                        update_data[field] = float(value)
+                    except (TypeError, ValueError):
+                        return _bad_request(f"{field} must be a float value")
+                else:
+                    update_data[field] = None
+
+            # 处理整数类型字段
+            elif field_type == int:
+                if value is not None:
+                    try:
+                        update_data[field] = int(value)
+                    except (TypeError, ValueError):
+                        return _bad_request(f"{field} must be an integer value")
+                else:
+                    update_data[field] = None
+
+            # 处理字符串类型字段
+            else:
+                update_data[field] = value if value else None
+
+    # 检查是否至少提供了一个修改字段
+    if not update_data:
+        return _bad_request("at least one field to update is required")
+
+    # 更新时间戳
+    update_data["updated_at"] = timezone.now()
+
+    # 执行更新
+    for field, value in update_data.items():
+        setattr(slice_record, field, value)
+    slice_record.save()
+
+    # 返回更新后的记录信息
+    return JsonResponse({
+        "code": 200,
+        "message": "updated",
+        "data": {
+            "id": slice_record.id,
+            "project_id": slice_record.project_id,
+            "mr_iid": slice_record.mr_iid,
+            "start_time": slice_record.start_time.isoformat() if slice_record.start_time else None,
+            "review_id": slice_record.review_id,
+            "expert_model_name": slice_record.expert_model_name,
+            "reflector_model_name": slice_record.reflector_model_name,
+            "expert_duration": slice_record.expert_duration,
+            "reflector_duration": slice_record.reflector_duration,
+            "expert_comments": slice_record.expert_comments,
+            "reflector_passed": slice_record.reflector_passed,
+            "expert_retries": slice_record.expert_retries,
+            "reflector_retries": slice_record.reflector_retries,
+            "result": slice_record.result,
+            "updated_at": slice_record.updated_at.isoformat() if slice_record.updated_at else None,
+        }
+    })
 
