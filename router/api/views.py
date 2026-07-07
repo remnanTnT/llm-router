@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import csv
 import json
 from collections import defaultdict
 from pathlib import Path
 
 import requests as http_requests
-from django.http import FileResponse, JsonResponse
+from django.http import FileResponse, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
@@ -1085,7 +1086,7 @@ def create_ai_assistant_user_feedback(request):
         return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
 
     # Validate domain
-    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent", "公共"]
     if data["domain"] not in valid_domains:
         return _bad_request(f"domain must be one of: {', '.join(valid_domains)}")
 
@@ -1151,7 +1152,7 @@ def update_ai_assistant_user_feedback(request):
     - id: 记录 ID
 
     可选修改参数（至少提供一个）：
-    - domain: 领域（可选值：知识管理、辅助设计、代码分析、问题定位、Agent）
+    - domain: 领域（可选值：知识管理、辅助设计、代码分析、问题定位、Agent、公共）
     - tool_version: 工具版本
     - issue_description: 问题描述
     - reporter: 报告人
@@ -1206,7 +1207,7 @@ def update_ai_assistant_user_feedback(request):
     }
 
     # 验证值范围
-    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent", "公共"]
     valid_priorities = ["高", "中", "低"]
     valid_statuses = ["open", "close", "cancel"]
 
@@ -1361,6 +1362,127 @@ def access_stats_by_department(request):
         "start_time": start.astimezone(BEIJING_TZ).strftime(TIME_FORMAT),
         "end_time": end.astimezone(BEIJING_TZ).strftime(TIME_FORMAT),
     })
+
+
+@require_http_methods(["GET"])
+def export_access_stats_csv(request):
+    """
+    导出人员使用情况为CSV文件。
+
+    查询参数：
+    - start_time: 开始时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - dept1: 一级部门（可选，"all"表示所有部门）
+    - dept2: 二级部门（可选，"all"表示所有部门）
+    - dept3: 三级部门（可选，"all"表示所有部门）
+    - dept4: 四级部门（可选，"all"表示所有部门）
+
+    返回：
+    - CSV文件下载，包含IP访问统计、用户信息、部门信息和token统计
+    - 文件名格式：access_stats_{start_time}_{end_time}.csv
+    """
+    parsed = _time_range_or_error(request)
+    if isinstance(parsed, JsonResponse):
+        return parsed
+    start, end = parsed
+
+    # 获取部门参数
+    dept1 = request.GET.get("dept1")
+    dept2 = request.GET.get("dept2")
+    dept3 = request.GET.get("dept3")
+    dept4 = request.GET.get("dept4")
+
+    # 处理部门参数：空字符串或"all"视为查询所有
+    dept1 = None if not dept1 or dept1.strip().lower() == "all" else dept1.strip()
+    dept2 = None if not dept2 or dept2.strip().lower() == "all" else dept2.strip()
+    dept3 = None if not dept3 or dept3.strip().lower() == "all" else dept3.strip()
+    dept4 = None if not dept4 or dept4.strip().lower() == "all" else dept4.strip()
+
+    # 查询数据
+    results = RequestRepository.count_success_by_ip_with_user_info(
+        start, end, dept1, dept2, dept3, dept4
+    )
+
+    # 创建CSV响应
+    response = HttpResponse(content_type="text/csv; charset=utf-8-sig")
+    
+    # 生成文件名
+    start_str = start.astimezone(BEIJING_TZ).strftime("%Y%m%d_%H%M%S")
+    end_str = end.astimezone(BEIJING_TZ).strftime("%Y%m%d_%H%M%S")
+    filename = f"access_stats_{start_str}_{end_str}.csv"
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+    # 写入CSV数据
+    writer = csv.writer(response)
+    
+    # 写入表头
+    writer.writerow([
+        "IP地址",
+        "访问次数",
+        "输入Token",
+        "输出Token",
+        "用户姓名",
+        "用户职务",
+        "员工工号",
+        "一级部门",
+        "二级部门",
+        "三级部门",
+        "四级部门",
+    ])
+
+    # 写入数据行
+    for row in results:
+        writer.writerow([
+            row.get("ip", ""),
+            row.get("access_count", 0),
+            row.get("input_token", 0),
+            row.get("output_token", 0),
+            row.get("user_name", ""),
+            row.get("user_charge", ""),
+            row.get("employee_no", ""),
+            row.get("dept1", ""),
+            row.get("dept2", ""),
+            row.get("dept3", ""),
+            row.get("dept4", ""),
+        ])
+
+    return response
+
+
+@require_http_methods(["GET"])
+def department_cascade(request):
+    """
+    获取部门级联数据，用于前端级联选择器。
+
+    查询参数（可选）：
+    - start_time: 开始时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+
+    如果不传时间参数，返回所有有效部门。
+    如果传时间参数，只返回在该时间范围内有访问记录的部门。
+
+    返回：
+    - 级联部门数据，格式适合前端级联选择器使用
+    """
+    from router.repositories.departments import DepartmentRepository
+
+    # 解析时间参数（可选）
+    start_time = request.GET.get("start_time")
+    end_time = request.GET.get("end_time")
+
+    start = None
+    end = None
+
+    if start_time and end_time:
+        parsed = _time_range_or_error(request)
+        if isinstance(parsed, JsonResponse):
+            return parsed
+        start, end = parsed
+
+    # 获取级联数据
+    result = DepartmentRepository.get_cascade(start, end)
+
+    return JsonResponse({"code": 200, "data": result})
 
 
 @require_http_methods(["GET"])
@@ -2296,7 +2418,7 @@ def ai_assistant_user_feedback_list(request):
 
     # 验证 domain 参数
     if domain:
-        valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+        valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent", "公共"]
         if domain not in valid_domains:
             return _bad_request(f"domain must be one of: {', '.join(valid_domains)}")
 

@@ -260,7 +260,7 @@ CREATE TABLE ai_assistant_user_feedback (
 );
 ```
 
-`domain` must be one of: `知识管理`, `辅助设计`, `代码分析`, `问题定位`, or `Agent`.
+`domain` must be one of: `知识管理`, `辅助设计`, `代码分析`, `问题定位`, `Agent`, or `公共`.
 
 `status` must be one of: `open` (新建), `close` (已关闭), or `cancel` (已取消).
 

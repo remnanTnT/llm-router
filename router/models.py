@@ -281,6 +281,7 @@ class AiAssistantUserFeedback(TimestampedSoftDeleteModel):
         ("代码分析", "代码分析"),
         ("问题定位", "问题定位"),
         ("Agent", "Agent"),
+        ("公共", "公共"),
     ]
 
     PRIORITY_CHOICES = [
