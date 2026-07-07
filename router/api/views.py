@@ -1086,7 +1086,7 @@ def create_ai_assistant_user_feedback(request):
         return _bad_request(f"invalid fields: {', '.join(sorted(extra_fields))}")
 
     # Validate domain
-    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent", "公共"]
     if data["domain"] not in valid_domains:
         return _bad_request(f"domain must be one of: {', '.join(valid_domains)}")
 
@@ -1152,7 +1152,7 @@ def update_ai_assistant_user_feedback(request):
     - id: 记录 ID
 
     可选修改参数（至少提供一个）：
-    - domain: 领域（可选值：知识管理、辅助设计、代码分析、问题定位、Agent）
+    - domain: 领域（可选值：知识管理、辅助设计、代码分析、问题定位、Agent、公共）
     - tool_version: 工具版本
     - issue_description: 问题描述
     - reporter: 报告人
@@ -1207,7 +1207,7 @@ def update_ai_assistant_user_feedback(request):
     }
 
     # 验证值范围
-    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+    valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent", "公共"]
     valid_priorities = ["高", "中", "低"]
     valid_statuses = ["open", "close", "cancel"]
 
@@ -2418,7 +2418,7 @@ def ai_assistant_user_feedback_list(request):
 
     # 验证 domain 参数
     if domain:
-        valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent"]
+        valid_domains = ["知识管理", "辅助设计", "代码分析", "问题定位", "Agent", "公共"]
         if domain not in valid_domains:
             return _bad_request(f"domain must be one of: {', '.join(valid_domains)}")
 

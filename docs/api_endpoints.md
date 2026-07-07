@@ -1365,7 +1365,7 @@ curl -i -X POST http://localhost:8001/api/concurrent_multiplier/update \
 POST /api/ai_assistant_user_feedback
 ```
 
-Creates an AI Assistant user feedback record. Required fields: `domain` (one of: 知识管理, 辅助设计, 代码分析, 问题定位, Agent), `issue_description`, `reporter`, `reported_at`, `status` (one of: open, close, cancel). Optional fields include `tool_version`, `priority` (高/中/低), `assignee`, `estimated_resolution_at`, `actual_resolution_at`, `bugfix_version`, `progress_tracking`, and `remarks`.
+Creates an AI Assistant user feedback record. Required fields: `domain` (one of: 知识管理, 辅助设计, 代码分析, 问题定位, Agent, 公共), `issue_description`, `reporter`, `reported_at`, `status` (one of: open, close, cancel). Optional fields include `tool_version`, `priority` (高/中/低), `assignee`, `estimated_resolution_at`, `actual_resolution_at`, `bugfix_version`, `progress_tracking`, and `remarks`.
 
 ```bash
 curl -i -X POST http://localhost:8001/api/ai_assistant_user_feedback \
@@ -1392,7 +1392,7 @@ Required field:
 
 Optional update fields (at least one required):
 
-- `domain`: Domain (one of: 知识管理, 辅助设计, 代码分析, 问题定位, Agent)
+- `domain`: Domain (one of: 知识管理, 辅助设计, 代码分析, 问题定位, Agent, 公共)
 - `tool_version`: Tool version
 - `issue_description`: Issue description
 - `reporter`: Reporter name
@@ -1861,7 +1861,7 @@ Query parameters (all optional):
 |-----------|------|-------------|
 | `create_start_time` | string | 创建时间开始范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS） |
 | `create_end_time` | string | 创建时间结束范围（基于 created_at，格式：YYYY-MM-DD HH:MM:SS） |
-| `domain` | string | 领域筛选（可选值：知识管理、辅助设计、代码分析、问题定位、Agent） |
+| `domain` | string | 领域筛选（可选值：知识管理、辅助设计、代码分析、问题定位、Agent、公共） |
 | `status` | string | 状态筛选（可选值：open、close、cancel） |
 | `reporter` | string | 报告人筛选（支持模糊匹配） |
 | `assignee` | string | 指派人筛选（支持模糊匹配） |
