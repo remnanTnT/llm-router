@@ -43,6 +43,13 @@ class _RetryState:
     last_server: Any = None
     last_status: int = 502
     last_reason: str = "Bad Gateway"
+    # The most recent real upstream error response, captured so that when
+    # retries are exhausted (all candidates tried or max attempts hit) the
+    # caller gets the actual upstream body/status rather than a synthetic
+    # 502. Stays None for timeout/connection failures, which have no body.
+    last_upstream: Any = None
+    last_content: bytes = b""
+    last_fail_reason: str | None = None
 
 
 @dataclass
@@ -442,6 +449,7 @@ class ProxyService:
                 target_pod_ip,
                 state.attempts,
                 server,
+                state,
             )
 
         if not is_stream:
@@ -511,6 +519,7 @@ class ProxyService:
         target_pod_ip,
         attempts,
         server,
+        state: _RetryState,
     ):
         if is_stream:
             # Drain the error body and close defensively: a broken connection
@@ -528,6 +537,13 @@ class ProxyService:
 
         fail_reason = proxy_response.extract_fail_reason(content, reason)
         failed_context_window = getattr(server, "context_window", None)
+
+        # Capture the real upstream error so that if retries are later
+        # exhausted the caller receives this body/status rather than a
+        # synthetic 502. Stream bodies have already been drained above.
+        state.last_upstream = upstream
+        state.last_content = content
+        state.last_fail_reason = fail_reason
 
         # On a real context overflow, first retry on a same-model server with a
         # strictly larger context window (the chooser excludes already-tried
@@ -654,6 +670,26 @@ class ProxyService:
             state.attempted_server_ids,
             final_server_id,
         )
+        # Retries exhausted (all candidates tried or max attempts hit). If the
+        # last failure was a real upstream error, return that response so the
+        # caller sees the actual upstream status/body. Only synthesize a 502/504
+        # for failures with no body, i.e. read timeouts or connection errors.
+        if state.last_upstream is not None and state.last_status >= 400:
+            proxy_response.finish_upstream_error(
+                record,
+                state.last_status,
+                state.last_fail_reason or state.last_reason,
+                self._target_identifier(state.last_server),
+                model,
+                state.attempts,
+                context,
+            )
+            self._after_finish(served_as_vip, model)
+            self._maybe_delay_opencode_failure(user_agent, state.last_status)
+            return proxy_response.response_from_upstream(
+                state.last_upstream, state.last_content, state.last_status
+            )
+
         status = 504 if state.last_status == 504 else 502
         message = "request timeout" if status == 504 else "502 Bad Gateway"
         proxy_response.finish_retry_failure(
