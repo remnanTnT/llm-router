@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from django.db.models import Count, Q
+from django.utils import timezone
 from router.models import DailyMrReview, CodehubReview
 
 
@@ -211,8 +212,8 @@ class CodehubReviewRepository:
         issue_category: str | list[str] | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
-        page: int = 1,
-        page_size: int = 10,
+        page: int | None = 1,
+        page_size: int | None = 10,
     ) -> dict:
         """
         获取CodehubReview过滤查询列表（支持分页）。
@@ -225,11 +226,11 @@ class CodehubReviewRepository:
             issue_category: 问题类别筛选（可选，支持单个值或列表）
             start_time: 开始时间（基于scan_date，可选）
             end_time: 结束时间（基于scan_date，可选）
-            page: 页码（默认为1）
-            page_size: 每页大小（默认为10）
+            page: 页码（默认为1，若为None则返回全量数据）
+            page_size: 每页大小（默认为10，若为None则返回全量数据）
 
         Returns:
-            包含分页数据和总数的字典
+            包含分页数据和总数的字典（全量数据时无分页字段）
         """
         from django.core.paginator import Paginator
 
@@ -278,46 +279,80 @@ class CodehubReviewRepository:
         # 按id降序排序（从大到小）
         queryset = queryset.order_by('-id')
 
-        # 分页
-        paginator = Paginator(queryset, page_size)
-        page_obj = paginator.page(page)
+        # 分页或全量返回
+        if page is None or page_size is None:
+            # 不分页，返回全量数据
+            items = []
+            for review in queryset:
+                items.append({
+                    'id': review.id,
+                    'project_id': review.project_id,
+                    'project_name': review.project_name,
+                    'branch_name': review.branch_name,
+                    'scan_commit_id': review.scan_commit_id,
+                    'scan_date': review.scan_date.isoformat() if review.scan_date else None,
+                    'completion_date': review.completion_date.isoformat() if review.completion_date else None,
+                    'relative_path': review.relative_path,
+                    'line': review.line,
+                    'issue_description': review.issue_description,
+                    'severity': review.severity,
+                    'issue_category': review.issue_category,
+                    'module': review.module,
+                    'first_level_confirmer': review.first_level_confirmer,
+                    'second_level_confirmer': review.second_level_confirmer,
+                    'is_modified': review.is_modified,
+                    'is_valid_issue': review.is_valid_issue,
+                    'is_modified_completed': review.is_modified_completed,
+                    'notes': review.notes,
+                    'created_at': review.created_at.isoformat() if review.created_at else None,
+                    'updated_at': review.updated_at.isoformat() if review.updated_at else None,
+                })
 
-        # 序列化数据
-        items = []
-        for review in page_obj.object_list:
-            items.append({
-                'id': review.id,
-                'project_id': review.project_id,
-                'project_name': review.project_name,
-                'branch_name': review.branch_name,
-                'scan_commit_id': review.scan_commit_id,
-                'scan_date': review.scan_date.isoformat() if review.scan_date else None,
-                'completion_date': review.completion_date.isoformat() if review.completion_date else None,
-                'relative_path': review.relative_path,
-                'line': review.line,
-                'issue_description': review.issue_description,
-                'severity': review.severity,
-                'issue_category': review.issue_category,
-                'module': review.module,
-                'first_level_confirmer': review.first_level_confirmer,
-                'second_level_confirmer': review.second_level_confirmer,
-                'is_modified': review.is_modified,
-                'is_valid_issue': review.is_valid_issue,
-                'is_modified_completed': review.is_modified_completed,
-                'notes': review.notes,
-                'created_at': review.created_at.isoformat() if review.created_at else None,
-                'updated_at': review.updated_at.isoformat() if review.updated_at else None,
-            })
+            return {
+                'total_count': queryset.count(),
+                'items': items,
+            }
+        else:
+            # 分页
+            paginator = Paginator(queryset, page_size)
+            page_obj = paginator.page(page)
 
-        return {
-            'total_count': paginator.count,
-            'total_pages': paginator.num_pages,
-            'current_page': page,
-            'page_size': page_size,
-            'has_next': page_obj.has_next(),
-            'has_previous': page_obj.has_previous(),
-            'items': items,
-        }
+            # 序列化数据
+            items = []
+            for review in page_obj.object_list:
+                items.append({
+                    'id': review.id,
+                    'project_id': review.project_id,
+                    'project_name': review.project_name,
+                    'branch_name': review.branch_name,
+                    'scan_commit_id': review.scan_commit_id,
+                    'scan_date': review.scan_date.isoformat() if review.scan_date else None,
+                    'completion_date': review.completion_date.isoformat() if review.completion_date else None,
+                    'relative_path': review.relative_path,
+                    'line': review.line,
+                    'issue_description': review.issue_description,
+                    'severity': review.severity,
+                    'issue_category': review.issue_category,
+                    'module': review.module,
+                    'first_level_confirmer': review.first_level_confirmer,
+                    'second_level_confirmer': review.second_level_confirmer,
+                    'is_modified': review.is_modified,
+                    'is_valid_issue': review.is_valid_issue,
+                    'is_modified_completed': review.is_modified_completed,
+                    'notes': review.notes,
+                    'created_at': review.created_at.isoformat() if review.created_at else None,
+                    'updated_at': review.updated_at.isoformat() if review.updated_at else None,
+                })
+
+            return {
+                'total_count': paginator.count,
+                'total_pages': paginator.num_pages,
+                'current_page': page,
+                'page_size': page_size,
+                'has_next': page_obj.has_next(),
+                'has_previous': page_obj.has_previous(),
+                'items': items,
+            }
 
     @staticmethod
     def update_review(
@@ -367,6 +402,8 @@ class CodehubReviewRepository:
         if notes is not None:
             review.notes = notes
 
+        # 自动更新 updated_at 字段
+        review.updated_at = timezone.now()
         review.save()
         return review
 
