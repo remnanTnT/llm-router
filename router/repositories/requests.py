@@ -367,7 +367,7 @@ class RequestRepository:
 
     @staticmethod
     def sum_input_tokens(start: datetime, end: datetime, model_id: int | None = None) -> int:
-        """Calculate the sum of final_prefix_cache + input_token_cnt for the given time range.
+        """Calculate the sum of input_token_cnt for the given time range.
 
         Args:
             start: Start datetime
@@ -382,7 +382,7 @@ class RequestRepository:
         if model_id is not None:
             qs = qs.filter(model_id=model_id)
         result = qs.aggregate(
-            total_input=models.Sum(models.F("final_prefix_cache") + models.F("input_token_cnt"))
+            total_input=models.Sum("input_token_cnt")
         )
         return result["total_input"] or 0
 
@@ -429,7 +429,7 @@ class RequestRepository:
 
         Returns:
             包含ip、access_count、input_token、output_token、user_name、user_charge、employee_no、dept1-4的字典列表
-            input_token = final_prefix_cache + input_token_cnt 的总和
+            input_token = input_token_cnt 的总和
             output_token = output_token_cnt 的总和
         """
         from router.models import Ips, UserIP, Department
@@ -446,7 +446,7 @@ class RequestRepository:
             .values("ip_id")
             .annotate(
                 access_count=models.Count("id"),
-                input_token=models.Sum(models.F("final_prefix_cache") + models.F("input_token_cnt")),
+                input_token=models.Sum("input_token_cnt"),
                 output_token=models.Sum("output_token_cnt"),
             )
         )

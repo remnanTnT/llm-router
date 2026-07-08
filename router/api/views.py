@@ -1330,7 +1330,7 @@ def access_stats_by_department(request):
 
     返回：
     - 按IP聚合的访问统计，包含用户信息、部门信息和token统计
-    - input_token: final_prefix_cache + input_token_cnt 的总和
+    - input_token: input_token_cnt 的总和
     - output_token: output_token_cnt 的总和
     """
     parsed = _time_range_or_error(request)
@@ -1836,10 +1836,19 @@ def codehub_review_list(request):
     severity = parse_multi_value(severity_raw)
     issue_category = parse_multi_value(issue_category_raw)
 
-    # 解析分页参数
-    page, page_size, error_msg = _parse_pagination(request, default_page_size=10, max_page_size=100)
-    if error_msg:
-        return _bad_request(error_msg)
+    # 解析分页参数：如果不传 page 和 page_size，返回全量数据
+    page_param = request.GET.get("page")
+    page_size_param = request.GET.get("page_size")
+
+    if page_param is None and page_size_param is None:
+        # 不传分页参数，返回全量数据
+        page = None
+        page_size = None
+    else:
+        # 正常分页处理
+        page, page_size, error_msg = _parse_pagination(request, default_page_size=10, max_page_size=100)
+        if error_msg:
+            return _bad_request(error_msg)
 
     # 解析时间参数
     start_time = None

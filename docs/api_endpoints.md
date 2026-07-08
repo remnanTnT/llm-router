@@ -714,7 +714,11 @@ curl 'http://localhost:8001/api/codehub_review/severity_stats?project_name=my-pr
 GET /api/codehub_review/list
 ```
 
-查询 CodehubReview 表数据列表，支持多条件过滤和分页。所有参数均为可选，若无参数则返回全量数据（分页）。
+查询 CodehubReview 表数据列表，支持多条件过滤和分页。所有参数均为可选。
+
+**分页行为说明**：
+- 若 **不传** `page` 和 `page_size` 参数，返回 **全量数据**（不分页）
+- 若 **传入** `page` 或 `page_size` 参数，则进行分页（默认 page=1, page_size=10）
 
 Query parameters (all optional):
 
@@ -725,8 +729,8 @@ Query parameters (all optional):
 | `relative_path` | string or string[] | 相对路径筛选（支持模糊匹配，可传入多个值，用逗号分隔或多次传参） |
 | `severity` | string or string[] | 严重级别筛选（可传入多个值，用逗号分隔或多次传参） |
 | `issue_category` | string or string[] | 问题类别筛选（可传入多个值，用逗号分隔或多次传参） |
-| `page` | integer | 页码（默认 1） |
-| `page_size` | integer | 每页大小（默认 10，最大 100） |
+| `page` | integer | 页码（默认 1，仅分页模式有效） |
+| `page_size` | integer | 每页大小（默认 10，最大 100，仅分页模式有效） |
 | `start_time` | string | 开始时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
 | `end_time` | string | 结束时间（基于 scan_date，格式：YYYY-MM-DD HH:MM:SS） |
 
@@ -755,6 +759,8 @@ Query parameters (all optional):
 两种方式可以混合使用，最终结果为所有值的合集筛选。
 
 Response JSON:
+
+**分页模式（传入 page 或 page_size）**：
 
 ```json
 {
@@ -795,85 +801,107 @@ Response JSON:
 }
 ```
 
-Example - get all reviews with default pagination:
+**全量模式（不传 page 和 page_size）**：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "total_count": 150,
+    "items": [
+      {
+        "id": 123,
+        "project_id": 1,
+        ...
+      },
+      {
+        "id": 124,
+        ...
+      }
+    ]
+  }
+}
+```
+
+Example - get all reviews without pagination (returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list'
 ```
 
-Example - filter by project:
+Example - filter by project (returns full data, no pagination params):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?project_name=my-project'
 ```
 
-Example - filter by project and branch:
+Example - filter by project and branch (returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?project_name=my-project&branch_name=main'
 ```
 
-Example - filter by severity (single value):
+Example - filter by severity (single value, returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?severity=critical'
 ```
 
-Example - filter by severity (multiple values, comma-separated):
+Example - filter by severity (multiple values, comma-separated, returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?severity=critical,high,medium'
 ```
 
-Example - filter by severity (multiple values, repeated parameter):
+Example - filter by severity (multiple values, repeated parameter, returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?severity=critical&severity=high'
 ```
 
-Example - filter by issue category (single value):
+Example - filter by issue category (single value, returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?issue_category=security'
 ```
 
-Example - filter by issue category (multiple values):
+Example - filter by issue category (multiple values, returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?issue_category=security,performance'
 ```
 
-Example - filter by relative path (single value, fuzzy match):
+Example - filter by relative path (single value, fuzzy match, returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?relative_path=src/main'
 ```
 
-Example - filter by relative path (multiple values, fuzzy match):
+Example - filter by relative path (multiple values, fuzzy match, returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?relative_path=src/main,src/utils,tests/'
 ```
 
-Example - filter by time range:
+Example - filter by time range (returns full data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
 ```
 
-Example - custom pagination:
+Example - custom pagination (returns paginated data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?page=2&page_size=20'
 ```
 
-Example - combined filters (multiple severity values with other filters):
+Example - combined filters with pagination (returns paginated data):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?project_name=my-project&branch_name=main&severity=critical,high&page=1&page_size=20&start_time=2026-06-01%2000:00:00&end_time=2026-06-30%2023:59:59'
 ```
 
-Example - combined filters (multiple issue categories with multiple relative paths):
+Example - combined filters with pagination (multiple issue categories with multiple relative paths):
 
 ```bash
 curl 'http://localhost:8001/api/codehub_review/list?project_name=my-project&issue_category=security,performance&relative_path=src/api,src/auth&page=1&page_size=50'
@@ -886,6 +914,8 @@ POST /api/codehub_review/update
 ```
 
 更新 CodehubReview 表中的记录。必传参数为 `id`，可选修改参数至少需提供一个。
+
+**自动更新字段**：调用此接口时，`updated_at` 字段会自动更新为当前时间。
 
 Request body (JSON):
 
@@ -1532,7 +1562,7 @@ Field descriptions:
 
 - `ip`: IP address
 - `access_count`: Number of successful requests from this IP
-- `input_token`: Total input tokens (final_prefix_cache + input_token_cnt) for this IP
+- `input_token`: Total input tokens (input_token_cnt) for this IP
 - `output_token`: Total output tokens (output_token_cnt) for this IP
 - `user_name`: User name associated with this IP
 - `user_charge`: User role/position
@@ -1589,7 +1619,7 @@ CSV file format:
 |--------|-------------|
 | IP地址 | IP address |
 | 访问次数 | Number of successful requests |
-| 输入Token | Total input tokens (final_prefix_cache + input_token_cnt) |
+| 输入Token | Total input tokens (input_token_cnt) |
 | 输出Token | Total output tokens (output_token_cnt) |
 | 用户姓名 | User name |
 | 用户职务 | User role/position |
