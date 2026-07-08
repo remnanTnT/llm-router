@@ -275,8 +275,8 @@ class CodehubReviewRepository:
         if end_time:
             queryset = queryset.filter(scan_date__lte=end_time)
 
-        # 按scan_date降序排序
-        queryset = queryset.order_by('-scan_date')
+        # 按id降序排序（从大到小）
+        queryset = queryset.order_by('-id')
 
         # 分页
         paginator = Paginator(queryset, page_size)

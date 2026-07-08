@@ -264,9 +264,9 @@ class CodehubReview(TimestampedSoftDeleteModel):
     module = models.CharField(max_length=200)
     first_level_confirmer = models.CharField(max_length=200, blank=True, null=True)
     second_level_confirmer = models.CharField(max_length=200, blank=True, null=True)
-    is_modified = models.BooleanField(default=False)
-    is_valid_issue = models.BooleanField(default=False)
-    is_modified_completed = models.BooleanField(default=False)
+    is_modified = models.BooleanField(default=False, blank=True, null=True)
+    is_valid_issue = models.BooleanField(default=False, blank=True, null=True)
+    is_modified_completed = models.BooleanField(default=False, blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
 
     class Meta:
