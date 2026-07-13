@@ -75,7 +75,7 @@ The range is inclusive. Bucketed endpoints choose granularity automatically: hou
 |----------|--------|-----------------|-----------------|-------------|
 | `/api/request_stats` | GET | `start_time`, `end_time` | | Distinct requesting IP count. |
 | `/api/total_request_count` | GET | `start_time`, `end_time` | | Successful external request count. |
-| `/api/input_token` | GET | `start_time`, `end_time` | `model_name`; use `total` or omit for all models | Sum of input tokens. |
+| `/api/input_token` | GET | `start_time`, `end_time` | `model_name`; use `total` or omit for all models | Sum of input tokens with cache hit/miss breakdown. |
 | `/api/output_token` | GET | `start_time`, `end_time` | `model_name`; use `total` or omit for all models | Sum of output tokens. |
 | `/api/model_request_stats` | GET | `start_time`, `end_time`, `model_name` | | Successful request count for one model. |
 | `/api/all_model_request_stats` | GET | `start_time`, `end_time` | `model_name` | Successful request counts grouped by model, or one model when provided. |
@@ -85,6 +85,36 @@ The range is inclusive. Bucketed endpoints choose granularity automatically: hou
 | `/api/model_ip_count_by_period` | GET | `start_time`, `end_time`, `model_name` | | Bucketed distinct IP count for one model. |
 | `/api/model_latency_boxplot` | GET | `start_time`, `end_time` | `model_names` comma list | Per-model latency boxplot data. Drops latencies above 890 seconds from quartiles and reports their ratio. |
 | `/api/access_stats_by_department` | GET | `start_time`, `end_time` | `dept1`, `dept2`, `dept3`, `dept4`; use `all` or omit for any department | Aggregates successful requests by IP with user and department info. Filters by department levels when provided. |
+
+### Input Token Cache Statistics
+
+`/api/input_token` returns prefix cache statistics alongside total input tokens:
+
+**Response fields:**
+- `total_input_tokens`: Sum of `input_token_cnt`
+- `cache_hit`: Sum of `final_prefix_cache` (prefix cache hits)
+- `cache_miss`: `total_input_tokens - cache_hit` (prefix cache misses)
+
+**Example response (all models):**
+```json
+{
+  "code": 200,
+  "total_input_tokens": 1250000,
+  "cache_hit": 280000,
+  "cache_miss": 970000
+}
+```
+
+**Example response (specific model):**
+```json
+{
+  "code": 200,
+  "model_name": "test-model",
+  "total_input_tokens": 500000,
+  "cache_hit": 120000,
+  "cache_miss": 380000
+}
+```
 
 Example:
 
