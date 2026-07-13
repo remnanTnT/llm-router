@@ -62,19 +62,26 @@ def input_token(request):
 
     # If model_name is "total" or not provided, return sum for all models
     if not model_name or model_name.strip().lower() == "total":
-        total_tokens = RequestRepository.sum_input_tokens(start, end)
-        return JsonResponse({"code": 200, "total_input_tokens": total_tokens})
+        token_stats = RequestRepository.sum_input_tokens(start, end)
+        return JsonResponse({
+            "code": 200,
+            "total_input_tokens": token_stats["total_input"],
+            "cache_hit": token_stats["cache_hit"],
+            "cache_miss": token_stats["cache_miss"]
+        })
 
     # Otherwise, filter by specific model
     model = _model_or_error(model_name.strip())
     if isinstance(model, JsonResponse):
         return model
 
-    total_tokens = RequestRepository.sum_input_tokens(start, end, model.id)
+    token_stats = RequestRepository.sum_input_tokens(start, end, model.id)
     return JsonResponse({
         "code": 200,
         "model_name": model.model_name,
-        "total_input_tokens": total_tokens
+        "total_input_tokens": token_stats["total_input"],
+        "cache_hit": token_stats["cache_hit"],
+        "cache_miss": token_stats["cache_miss"]
     })
 
 

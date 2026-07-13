@@ -366,13 +366,19 @@ class RequestRepository:
         )
 
     @staticmethod
-    def sum_input_tokens(start: datetime, end: datetime, model_id: int | None = None) -> int:
-        """Calculate the sum of input_token_cnt for the given time range.
+    def sum_input_tokens(start: datetime, end: datetime, model_id: int | None = None) -> dict:
+        """Calculate the sum of input_token_cnt and final_prefix_cache for the given time range.
 
         Args:
             start: Start datetime
             end: End datetime
             model_id: Optional model ID to filter by. If None, returns sum for all models.
+
+        Returns:
+            dict containing:
+                - total_input: sum of input_token_cnt
+                - cache_hit: sum of final_prefix_cache (命中)
+                - cache_miss: total_input - cache_hit (未命中)
         """
         qs = RequestRepository.external_requests().filter(
             send_time__gte=start,
@@ -382,9 +388,17 @@ class RequestRepository:
         if model_id is not None:
             qs = qs.filter(model_id=model_id)
         result = qs.aggregate(
-            total_input=models.Sum("input_token_cnt")
+            total_input=models.Sum("input_token_cnt"),
+            cache_hit=models.Sum("final_prefix_cache")
         )
-        return result["total_input"] or 0
+        total_input = result["total_input"] or 0
+        cache_hit = result["cache_hit"] or 0
+        cache_miss = total_input - cache_hit
+        return {
+            "total_input": total_input,
+            "cache_hit": cache_hit,
+            "cache_miss": cache_miss
+        }
 
     @staticmethod
     def sum_output_tokens(start: datetime, end: datetime, model_id: int | None = None) -> int:
