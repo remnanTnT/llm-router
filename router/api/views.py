@@ -60,29 +60,57 @@ def input_token(request):
     if model_name is not None and not model_name.strip():
         return _bad_request("model_name cannot be blank")
 
-    # If model_name is "total" or not provided, return sum for all models
-    if not model_name or model_name.strip().lower() == "total":
-        token_stats = RequestRepository.sum_input_tokens(start, end)
-        return JsonResponse({
-            "code": 200,
-            "total_input_tokens": token_stats["total_input"],
-            "cache_hit": token_stats["cache_hit"],
-            "cache_miss": token_stats["cache_miss"]
-        })
+    # Determine model_id filter
+    model_id = None
+    model_obj = None
+    if model_name and model_name.strip().lower() != "total":
+        model_obj = _model_or_error(model_name.strip())
+        if isinstance(model_obj, JsonResponse):
+            return model_obj
+        model_id = model_obj.id
 
-    # Otherwise, filter by specific model
-    model = _model_or_error(model_name.strip())
-    if isinstance(model, JsonResponse):
-        return model
+    # Determine granularity based on time range
+    granularity = choose_granularity(start, end)
 
-    token_stats = RequestRepository.sum_input_tokens(start, end, model.id)
-    return JsonResponse({
+    # If granularity is "hour" (date range is a day), return hourly data
+    if granularity == "hour":
+        labels = bucket_labels(start, end, granularity)
+        rows = RequestRepository.sum_input_tokens_by_bucket(
+            start, end, bucket_expression("send_time", granularity), model_id
+        )
+        stats = []
+        for label in labels:
+            bucket_data = rows.get(label)
+            if bucket_data:
+                stats.append({
+                    "time": label,
+                    "total_input_tokens": bucket_data["total_input"],
+                    "cache_hit": bucket_data["cache_hit"],
+                    "cache_miss": bucket_data["cache_miss"]
+                })
+            else:
+                stats.append({
+                    "time": label,
+                    "total_input_tokens": 0,
+                    "cache_hit": 0,
+                    "cache_miss": 0
+                })
+        response = {"code": 200, "stats": stats}
+        if model_obj:
+            response["model_name"] = model_obj.model_name
+        return JsonResponse(response)
+
+    # Otherwise, return single aggregate (backward compatibility)
+    token_stats = RequestRepository.sum_input_tokens(start, end, model_id)
+    response = {
         "code": 200,
-        "model_name": model.model_name,
         "total_input_tokens": token_stats["total_input"],
         "cache_hit": token_stats["cache_hit"],
         "cache_miss": token_stats["cache_miss"]
-    })
+    }
+    if model_obj:
+        response["model_name"] = model_obj.model_name
+    return JsonResponse(response)
 
 
 @require_http_methods(["GET"])
@@ -97,8 +125,18 @@ def output_token(request):
     if model_name is not None and not model_name.strip():
         return _bad_request("model_name cannot be blank")
 
+    # Determine granularity and check if we should return hourly data
+    granularity = choose_granularity(start, end)
+
     # If model_name is "total" or not provided, return sum for all models
     if not model_name or model_name.strip().lower() == "total":
+        # Return bucketed data when granularity is hour (date range is a day)
+        if granularity == "hour":
+            labels = bucket_labels(start, end, granularity)
+            rows = RequestRepository.sum_output_tokens_by_bucket(start, end, bucket_expression("send_time", granularity))
+            values = {format_bucket(bucket, granularity): count for bucket, count in rows.items()}
+            return JsonResponse({"code": 200, "stats": fill_series(labels, values, "total_output_tokens", 0)})
+        # Otherwise, return single aggregate for backward compatibility
         total_tokens = RequestRepository.sum_output_tokens(start, end)
         return JsonResponse({"code": 200, "total_output_tokens": total_tokens})
 
@@ -107,12 +145,80 @@ def output_token(request):
     if isinstance(model, JsonResponse):
         return model
 
+    # Return bucketed data when granularity is hour (date range is a day)
+    if granularity == "hour":
+        labels = bucket_labels(start, end, granularity)
+        rows = RequestRepository.sum_output_tokens_by_bucket(start, end, bucket_expression("send_time", granularity), model.id)
+        values = {format_bucket(bucket, granularity): count for bucket, count in rows.items()}
+        return JsonResponse({"code": 200, "stats": fill_series(labels, values, "total_output_tokens", 0)})
+
+    # Otherwise, return single aggregate for backward compatibility
     total_tokens = RequestRepository.sum_output_tokens(start, end, model.id)
     return JsonResponse({
         "code": 200,
         "model_name": model.model_name,
         "total_output_tokens": total_tokens
     })
+
+
+@require_http_methods(["GET"])
+def token_summary(request):
+    """
+    Token总览接口 - 返回指定时间范围和模型的token统计摘要。
+
+    查询参数：
+    - start_time: 开始时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - end_time: 结束时间（北京时间，格式：YYYY-MM-DD HH:MM:SS）
+    - model_name: 模型名称（可选，不传或传"total"表示所有模型）
+
+    返回：
+    - input_token: 输入token总数
+    - output_token: 输出token总数
+    - cache_hit: 缓存命中数
+    - cache_miss: 缓存未命中数
+    - hit_rate: 命中率（百分比）
+    """
+    parsed = _time_range_or_error(request)
+    if isinstance(parsed, JsonResponse):
+        return parsed
+    start, end = parsed
+
+    # Handle model_name parameter
+    model_name = request.GET.get("model_name")
+    if model_name is not None and not model_name.strip():
+        return _bad_request("model_name cannot be blank")
+
+    # Determine model_id filter
+    model_id = None
+    model_obj = None
+    if model_name and model_name.strip().lower() != "total":
+        model_obj = _model_or_error(model_name.strip())
+        if isinstance(model_obj, JsonResponse):
+            return model_obj
+        model_id = model_obj.id
+
+    # Get token statistics
+    input_stats = RequestRepository.sum_input_tokens(start, end, model_id)
+    output_tokens = RequestRepository.sum_output_tokens(start, end, model_id)
+
+    # Calculate hit rate
+    total_input = input_stats["total_input"]
+    cache_hit = input_stats["cache_hit"]
+    hit_rate = round((cache_hit / total_input * 100), 2) if total_input > 0 else 0.0
+
+    response = {
+        "code": 200,
+        "input_token": total_input,
+        "output_token": output_tokens,
+        "cache_hit": cache_hit,
+        "cache_miss": input_stats["cache_miss"],
+        "hit_rate": hit_rate
+    }
+
+    if model_obj:
+        response["model_name"] = model_obj.model_name
+
+    return JsonResponse(response)
 
 
 @require_http_methods(["GET"])
@@ -1672,6 +1778,7 @@ def codehub_review_category_stats(request):
     - branch_name: 分支名称
     - start_time: 开始时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
     - end_time: 结束时间（基于scan_date，格式：YYYY-MM-DD HH:MM:SS）
+    - need_analysis: 是否需要分析（true/false）
 
     返回：
     - issue_category各个类型的数量
@@ -1684,10 +1791,20 @@ def codehub_review_category_stats(request):
     branch_name = request.GET.get("branch_name")
     start_time_str = request.GET.get("start_time")
     end_time_str = request.GET.get("end_time")
+    need_analysis_str = request.GET.get("need_analysis")
 
     # 处理筛选参数
     project_name = project_name.strip() if project_name else None
     branch_name = branch_name.strip() if branch_name else None
+
+    # 解析 need_analysis 参数
+    need_analysis = None
+    if need_analysis_str:
+        need_analysis_str = need_analysis_str.strip().lower()
+        if need_analysis_str == "true":
+            need_analysis = True
+        elif need_analysis_str == "false":
+            need_analysis = False
 
     # 解析时间参数
     start_time = None
@@ -1712,7 +1829,8 @@ def codehub_review_category_stats(request):
         project_name=project_name,
         branch_name=branch_name,
         start_time=start_time,
-        end_time=end_time
+        end_time=end_time,
+        need_analysis=need_analysis
     )
 
     return JsonResponse({
@@ -1910,6 +2028,8 @@ def update_codehub_review(request):
     - is_modified: 是否已修改（布尔值）
     - is_modified_completed: 是否修改完成（布尔值）
     - notes: 备注
+    - need_analysis: 是否需要分析（布尔值）
+    - conclusion: 结论
 
     返回：
     - 更新成功返回更新后的记录信息
@@ -1943,6 +2063,8 @@ def update_codehub_review(request):
         "is_modified": bool,
         "is_modified_completed": bool,
         "notes": str,
+        "need_analysis": bool,
+        "conclusion": str,
     }
 
     # 提取并验证可选字段

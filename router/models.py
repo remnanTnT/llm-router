@@ -268,6 +268,8 @@ class CodehubReview(TimestampedSoftDeleteModel):
     is_valid_issue = models.BooleanField(default=False, blank=True, null=True)
     is_modified_completed = models.BooleanField(default=False, blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
+    need_analysis = models.BooleanField(null=True, blank=True)
+    conclusion = models.TextField(null=True, blank=True)
 
     class Meta:
         managed = False

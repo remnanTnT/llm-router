@@ -180,7 +180,11 @@ CREATE TABLE server_operations (
 
 ```sql
 ALTER TABLE codehub_review ADD COLUMN is_modified_completed BOOLEAN DEFAULT FALSE;
+ALTER TABLE codehub_review ADD COLUMN need_analysis BOOLEAN NULL;
+ALTER TABLE codehub_review ADD COLUMN conclusion TEXT NULL;
 ```
+
+`need_analysis` (nullable `BOOLEAN`) indicates whether the issue requires further analysis. `conclusion` (nullable `TEXT`) stores the analysis conclusion or resolution notes for the issue.
 
 ## `daily_mr_review` Table
 

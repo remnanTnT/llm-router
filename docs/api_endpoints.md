@@ -447,6 +447,8 @@ Fields include:
 - `is_modified`: Whether the issue has been modified (default: `false`)
 - `is_valid_issue`: Whether this is a valid issue (default: `false`)
 - `is_modified_completed`: Whether the modification has been completed (default: `false`, auto-set if not provided)
+- `need_analysis`: Whether the issue requires further analysis (optional)
+- `conclusion`: Analysis conclusion or resolution notes (optional)
 - `notes`: Additional notes (optional)
 
 Example:
@@ -822,6 +824,8 @@ Response JSON:
         "is_modified": false,
         "is_valid_issue": true,
         "is_modified_completed": false,
+        "need_analysis": true,
+        "conclusion": "Analysis completed, requires refactoring",
         "notes": null,
         "created_at": "2026-06-15T10:30:00+08:00",
         "updated_at": "2026-06-15T10:30:00+08:00"
@@ -958,6 +962,8 @@ Request body (JSON):
 | `is_valid_issue` | boolean | No | 是否为有效问题 |
 | `is_modified` | boolean | No | 是否已修改 |
 | `is_modified_completed` | boolean | No | 是否修改完成 |
+| `need_analysis` | boolean | No | 是否需要进一步分析 |
+| `conclusion` | string | No | 分析结论或解决方案 |
 | `notes` | string | No | 备注 |
 
 注意：`id` 为必传参数，可选修改参数中至少需要提供一个字段。
@@ -976,6 +982,8 @@ Response JSON (success):
     "is_valid_issue": true,
     "is_modified": true,
     "is_modified_completed": true,
+    "need_analysis": false,
+    "conclusion": null,
     "notes": "Issue confirmed and fixed",
     "updated_at": "2026-06-30T15:30:00+08:00"
   }

@@ -91,6 +91,7 @@ class CodehubReviewRepository:
         branch_name: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
+        need_analysis: bool | None = None,
     ) -> dict:
         """
         获取CodehubReview的issue_category详细统计信息。
@@ -100,6 +101,7 @@ class CodehubReviewRepository:
             branch_name: 分支名称筛选（可选）
             start_time: 开始时间（基于scan_date，可选）
             end_time: 结束时间（基于scan_date，可选）
+            need_analysis: 是否需要分析筛选（可选）
 
         Returns:
             issue_category各个类型的详细数据，包含：
@@ -123,6 +125,9 @@ class CodehubReviewRepository:
 
         if end_time:
             queryset = queryset.filter(scan_date__lte=end_time)
+
+        if need_analysis is not None:
+            queryset = queryset.filter(need_analysis=need_analysis)
 
         # 统计issue_category各个类型的详细数据
         category_counts = queryset.values('issue_category').annotate(
@@ -304,6 +309,8 @@ class CodehubReviewRepository:
                     'is_valid_issue': review.is_valid_issue,
                     'is_modified_completed': review.is_modified_completed,
                     'notes': review.notes,
+                    'need_analysis': review.need_analysis,
+                    'conclusion': review.conclusion,
                     'created_at': review.created_at.isoformat() if review.created_at else None,
                     'updated_at': review.updated_at.isoformat() if review.updated_at else None,
                 })
@@ -340,6 +347,8 @@ class CodehubReviewRepository:
                     'is_valid_issue': review.is_valid_issue,
                     'is_modified_completed': review.is_modified_completed,
                     'notes': review.notes,
+                    'need_analysis': review.need_analysis,
+                    'conclusion': review.conclusion,
                     'created_at': review.created_at.isoformat() if review.created_at else None,
                     'updated_at': review.updated_at.isoformat() if review.updated_at else None,
                 })
@@ -364,6 +373,8 @@ class CodehubReviewRepository:
         is_modified: bool | None = None,
         is_modified_completed: bool | None = None,
         notes: str | None = None,
+        need_analysis: bool | None = None,
+        conclusion: str | None = None,
     ) -> CodehubReview | None:
         """
         更新CodehubReview记录。
@@ -377,6 +388,8 @@ class CodehubReviewRepository:
             is_modified: 是否已修改（可选）
             is_modified_completed: 是否修改完成（可选）
             notes: 备注（可选）
+            need_analysis: 是否需要分析（可选）
+            conclusion: 结论（可选）
 
         Returns:
             更新后的CodehubReview对象，若不存在则返回None
@@ -401,6 +414,10 @@ class CodehubReviewRepository:
             review.is_modified_completed = is_modified_completed
         if notes is not None:
             review.notes = notes
+        if need_analysis is not None:
+            review.need_analysis = need_analysis
+        if conclusion is not None:
+            review.conclusion = conclusion
 
         # 自动更新 updated_at 字段
         review.updated_at = timezone.now()

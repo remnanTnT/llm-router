@@ -422,6 +422,83 @@ class RequestRepository:
         return result["total_output"] or 0
 
     @staticmethod
+    def sum_input_tokens_by_bucket(start: datetime, end: datetime, bucket_expr, model_id: int | None = None) -> dict:
+        """Aggregate input_token_cnt and final_prefix_cache by time bucket.
+
+        Args:
+            start: Start datetime
+            end: End datetime
+            bucket_expr: Django Trunc function (TruncHour/TruncDay/TruncMonth)
+            model_id: Optional model ID to filter by. If None, aggregates for all models.
+
+        Returns:
+            dict mapping bucket string -> {total_input, cache_hit, cache_miss}
+        """
+        from router.api.stats import format_bucket
+        
+        qs = RequestRepository.external_requests().filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success"
+        )
+        if model_id is not None:
+            qs = qs.filter(model_id=model_id)
+        
+        # Determine granularity from bucket_expr type
+        granularity = "hour"
+        if "Day" in str(type(bucket_expr)):
+            granularity = "day"
+        elif "Month" in str(type(bucket_expr)):
+            granularity = "month"
+        
+        rows = qs.annotate(bucket=bucket_expr).values("bucket").annotate(
+            total_input=models.Sum("input_token_cnt"),
+            cache_hit=models.Sum("final_prefix_cache")
+        ).order_by("bucket")
+        
+        result = {}
+        for row in rows:
+            total_input = row["total_input"] or 0
+            cache_hit = row["cache_hit"] or 0
+            cache_miss = total_input - cache_hit
+            # Convert bucket datetime to formatted string for lookup
+            bucket_key = format_bucket(row["bucket"], granularity)
+            result[bucket_key] = {
+                "total_input": total_input,
+                "cache_hit": cache_hit,
+                "cache_miss": cache_miss
+            }
+        return result
+
+    @staticmethod
+    def sum_output_tokens_by_bucket(start: datetime, end: datetime, bucket_expr, model_id: int | None = None) -> dict:
+        """Calculate the sum of output_token_cnt grouped by time bucket.
+
+        Args:
+            start: Start datetime
+            end: End datetime
+            bucket_expr: Django Trunc expression for bucketing
+            model_id: Optional model ID to filter by. If None, returns sum for all models.
+
+        Returns:
+            Dict mapping bucket to total output tokens
+        """
+        qs = RequestRepository.external_requests().filter(
+            send_time__gte=start,
+            send_time__lte=end,
+            task_status="success"
+        )
+        if model_id is not None:
+            qs = qs.filter(model_id=model_id)
+        return {
+            row["bucket"]: row["total_output"]
+            for row in qs.annotate(bucket=bucket_expr)
+            .values("bucket")
+            .annotate(total_output=models.Sum("output_token_cnt"))
+            .order_by("bucket")
+        }
+
+    @staticmethod
     def count_success_by_ip_with_user_info(
         start: datetime,
         end: datetime,
