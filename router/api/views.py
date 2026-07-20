@@ -1440,6 +1440,9 @@ def access_stats_by_department(request):
     - dept2: 二级部门（可选，"all"表示所有部门）
     - dept3: 三级部门（可选，"all"表示所有部门）
     - dept4: 四级部门（可选，"all"表示所有部门）
+    - employee_no: 工号（可选）
+    - user_name: 用户名（可选）
+    - ip: IP地址（可选）
 
     返回：
     - 按IP聚合的访问统计，包含用户信息、部门信息和token统计
@@ -1463,9 +1466,19 @@ def access_stats_by_department(request):
     dept3 = None if not dept3 or dept3.strip().lower() == "all" else dept3.strip()
     dept4 = None if not dept4 or dept4.strip().lower() == "all" else dept4.strip()
 
+    # 获取新增的可选过滤参数
+    employee_no = request.GET.get("employee_no")
+    user_name = request.GET.get("user_name")
+    ip = request.GET.get("ip")
+
+    # 处理新增参数：空字符串视为不限制
+    employee_no = employee_no.strip() if employee_no and employee_no.strip() else None
+    user_name = user_name.strip() if user_name and user_name.strip() else None
+    ip = ip.strip() if ip and ip.strip() else None
+
     # 查询数据
     results = RequestRepository.count_success_by_ip_with_user_info(
-        start, end, dept1, dept2, dept3, dept4
+        start, end, dept1, dept2, dept3, dept4, employee_no, user_name, ip
     )
 
     return JsonResponse({
@@ -1489,6 +1502,9 @@ def export_access_stats_csv(request):
     - dept2: 二级部门（可选，"all"表示所有部门）
     - dept3: 三级部门（可选，"all"表示所有部门）
     - dept4: 四级部门（可选，"all"表示所有部门）
+    - employee_no: 工号（可选）
+    - user_name: 用户名（可选）
+    - ip: IP地址（可选）
 
     返回：
     - CSV文件下载，包含IP访问统计、用户信息、部门信息和token统计
@@ -1511,9 +1527,19 @@ def export_access_stats_csv(request):
     dept3 = None if not dept3 or dept3.strip().lower() == "all" else dept3.strip()
     dept4 = None if not dept4 or dept4.strip().lower() == "all" else dept4.strip()
 
+    # 获取新增的可选过滤参数
+    employee_no = request.GET.get("employee_no")
+    user_name = request.GET.get("user_name")
+    ip = request.GET.get("ip")
+
+    # 处理新增参数：空字符串视为不限制
+    employee_no = employee_no.strip() if employee_no and employee_no.strip() else None
+    user_name = user_name.strip() if user_name and user_name.strip() else None
+    ip = ip.strip() if ip and ip.strip() else None
+
     # 查询数据
     results = RequestRepository.count_success_by_ip_with_user_info(
-        start, end, dept1, dept2, dept3, dept4
+        start, end, dept1, dept2, dept3, dept4, employee_no, user_name, ip
     )
 
     # 创建CSV响应

@@ -84,7 +84,7 @@ The range is inclusive. Bucketed endpoints choose granularity automatically: hou
 | `/api/model_request_count_by_period` | GET | `start_time`, `end_time`, `model_name` | | Bucketed successful request count for one model. |
 | `/api/model_ip_count_by_period` | GET | `start_time`, `end_time`, `model_name` | | Bucketed distinct IP count for one model. |
 | `/api/model_latency_boxplot` | GET | `start_time`, `end_time` | `model_names` comma list | Per-model latency boxplot data. Drops latencies above 890 seconds from quartiles and reports their ratio. |
-| `/api/access_stats_by_department` | GET | `start_time`, `end_time` | `dept1`, `dept2`, `dept3`, `dept4`; use `all` or omit for any department | Aggregates successful requests by IP with user and department info. Filters by department levels when provided. |
+| `/api/access_stats_by_department` | GET | `start_time`, `end_time` | `dept1`, `dept2`, `dept3`, `dept4`, `employee_no`, `user_name`, `ip`; use `all` or omit department params for any department | Aggregates successful requests by IP with user and department info. Filters by department levels and optional user/IP filters when provided. |
 
 ### Input Token Cache Statistics
 
@@ -1547,6 +1547,9 @@ Query parameters:
 - `dept2`: Level 2 department filter (optional; use `all` or omit to include all)
 - `dept3`: Level 3 department filter (optional; use `all` or omit to include all)
 - `dept4`: Level 4 department filter (optional; use `all` or omit to include all)
+- `employee_no`: Employee number filter (optional; exact match)
+- `user_name`: User name filter (optional; exact match)
+- `ip`: IP address filter (optional; exact match)
 
 The endpoint performs the following:
 
@@ -1625,10 +1628,36 @@ Example - filter by multiple department levels:
 curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&dept1=技术部&dept2=研发中心&dept3=后端组'
 ```
 
+Example - filter by employee number:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&employee_no=EMP001'
+```
+
+Example - filter by user name:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&user_name=张三'
+```
+
+Example - filter by IP address:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&ip=192.168.1.100'
+```
+
+Example - combine multiple filters:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&dept1=技术部&employee_no=EMP001'
+```
+
 Notes:
 
 - Department filters use exact matching, not pattern matching
 - Multiple department filters are combined with AND logic
+- `employee_no`, `user_name`, and `ip` filters use exact matching
+- All filters can be combined together with AND logic
 - Only valid, non-deleted user and department records are included
 - Internal routing requests (`ip_id=0`) are excluded from results
 
@@ -1648,6 +1677,9 @@ Query parameters:
 - `dept2`: Level 2 department filter (optional; use `all` or omit to include all)
 - `dept3`: Level 3 department filter (optional; use `all` or omit to include all)
 - `dept4`: Level 4 department filter (optional; use `all` or omit to include all)
+- `employee_no`: Employee number filter (optional; exact match)
+- `user_name`: User name filter (optional; exact match)
+- `ip`: IP address filter (optional; exact match)
 
 Note: Pagination parameters (`page`, `page_size`) are NOT supported for this endpoint. All matching records are exported.
 
@@ -1679,6 +1711,24 @@ Example - export filtered by department:
 
 ```bash
 curl 'http://localhost:8001/api/access_stats_by_department/export?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&dept1=技术部' -o tech_dept_stats.csv
+```
+
+Example - export filtered by employee number:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department/export?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&employee_no=EMP001' -o emp001_stats.csv
+```
+
+Example - export filtered by user name:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department/export?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&user_name=张三' -o user_stats.csv
+```
+
+Example - export filtered by IP address:
+
+```bash
+curl 'http://localhost:8001/api/access_stats_by_department/export?start_time=2026-06-24%2000:00:00&end_time=2026-06-25%2023:59:59&ip=192.168.1.100' -o ip_stats.csv
 ```
 
 Notes:
