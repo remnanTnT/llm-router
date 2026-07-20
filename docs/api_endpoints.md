@@ -160,6 +160,39 @@ curl -i -X POST http://localhost:8001/api/whitelist/update \
 
 `is_allowed` must be `0` or `1`.
 
+## API-Key Registration
+
+```http
+POST /api/apikey
+```
+
+Registers an API-key-backed `user_ips` row for an employee. This endpoint is unauthenticated and must not be exposed to untrusted callers. Keys are stored as supplied but are never returned in the response.
+
+```bash
+curl -i -X POST http://localhost:8001/api/apikey \
+  -H 'Content-Type: application/json' \
+  -d '{"apikey":"employee-key","employee_no":"E001"}'
+```
+
+The endpoint retrieves `user_charge` and `dept1` through `dept4` from `CMDBService.fetch_user_data_by_employee_no`. The public CMDB adapter is unimplemented, so it returns HTTP 404 until an internal adapter provides the lookup.
+
+Posting the current key/employee pair is idempotent. Posting a different key soft-deletes the employee's previous key row and inserts a new row. A key already present anywhere in `user_ips`, including an inactive historical row, returns HTTP 409.
+
+```json
+{
+  "code": 200,
+  "message": "created",
+  "data": {
+    "user_ip_id": 42,
+    "employee_no": "E001",
+    "vip": false,
+    "operation": "created"
+  }
+}
+```
+
+This first-stage endpoint only stores credentials. Proxy requests do not resolve or apply registered API keys yet.
+
 ## Whitelist List
 
 ```http
@@ -2026,4 +2059,3 @@ Example - combined filters:
 ```bash
 curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?domain=知识管理&status=open&priority=高&page=1&page_size=20'
 ```
-

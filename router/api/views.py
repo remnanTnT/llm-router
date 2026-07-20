@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from collections import defaultdict
 from pathlib import Path
 
 import requests as http_requests
+from django.db import IntegrityError, transaction
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
@@ -26,8 +28,93 @@ from router.api.stats import (
 from router.models import Model, Server, ServerOperation
 from router.repositories.models import ModelRepository
 from router.repositories.requests import RequestRepository
+from router.repositories.user_ips import APIKeyConflict, UserIPRepository
+from router.services.cmdb import CMDBService
 
 DOWNLOAD_FILE_PATH = Path("/home/AI_Assistant/AI_Assistant.exe")
+logger = logging.getLogger(__name__)
+
+
+@require_http_methods(["POST"])
+def register_apikey(request):
+    try:
+        data = json.loads(request.body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return _bad_request("invalid JSON body")
+
+    if not isinstance(data, dict):
+        return _bad_request("JSON body must be an object")
+
+    apikey = data.get("apikey")
+    employee_no = data.get("employee_no")
+    if not isinstance(apikey, str) or not apikey.strip():
+        return _bad_request("apikey is required")
+    if not isinstance(employee_no, str) or not employee_no.strip():
+        return _bad_request("employee_no is required")
+
+    apikey = apikey.strip()
+    employee_no = employee_no.strip()
+    if len(apikey) > 255:
+        return _bad_request("apikey must be at most 255 characters")
+    if len(employee_no) > 50:
+        return _bad_request("employee_no must be at most 50 characters")
+
+    try:
+        user_data = CMDBService().fetch_user_data_by_employee_no(employee_no)
+    except NotImplementedError:
+        return JsonResponse({"code": 404, "error": "employee lookup is not implemented"}, status=404)
+    except Exception:
+        logger.exception("CMDB employee lookup failed for %s", employee_no)
+        return JsonResponse({"code": 502, "error": "CMDB employee lookup failed"}, status=502)
+
+    if user_data is None:
+        return JsonResponse({"code": 404, "error": "employee_no not found"}, status=404)
+    if not isinstance(user_data, dict):
+        return JsonResponse({"code": 502, "error": "invalid CMDB employee data"}, status=502)
+
+    normalized = {}
+    for field in ("user_charge", "dept1", "dept2", "dept3", "dept4"):
+        value = user_data.get(field, "")
+        if value is None:
+            value = ""
+        if not isinstance(value, str) or len(value.strip()) > 100:
+            return JsonResponse({"code": 502, "error": f"invalid CMDB field: {field}"}, status=502)
+        normalized[field] = value.strip()
+
+    from router.repositories.departments import DepartmentRepository
+
+    try:
+        with transaction.atomic():
+            department_id = None
+            department_values = [normalized[f"dept{level}"] for level in range(1, 5)]
+            if any(department_values):
+                department, _ = DepartmentRepository.get_or_create(*department_values)
+                department_id = department.id
+
+            row, action = UserIPRepository.register_api_key(
+                apikey=apikey,
+                employee_no=employee_no,
+                user_charge=normalized["user_charge"],
+                department_id=department_id,
+            )
+    except (APIKeyConflict, IntegrityError):
+        return JsonResponse({"code": 409, "error": "apikey or employee_no conflicts with an existing key"}, status=409)
+    except Exception:
+        logger.exception("API key registration failed for employee %s", employee_no)
+        return JsonResponse({"code": 500, "error": "API key registration failed"}, status=500)
+
+    return JsonResponse(
+        {
+            "code": 200,
+            "message": action,
+            "data": {
+                "user_ip_id": row.id,
+                "employee_no": row.employee_no,
+                "vip": row.vip,
+                "operation": action,
+            },
+        }
+    )
 
 
 @require_http_methods(["GET"])
@@ -1130,12 +1217,9 @@ def update_concurrent_multiplier(request):
         if not employee_no:
             return _bad_request("employee_no cannot be empty")
 
-        user_ip = UserIPRepository.get_by_employee_no(employee_no)
+        user_ip = UserIPRepository.get_ip_backed_by_employee_no(employee_no)
         if not user_ip:
             return JsonResponse({"code": 404, "error": "employee_no not found"}, status=404)
-
-        if user_ip.ip_id is None:
-            return JsonResponse({"code": 404, "error": "ip_id not found for this employee"}, status=404)
 
         try:
             ip_obj = IPRepository.update_concurrent_multiplier(user_ip.ip_id, multiplier_value)
@@ -2814,4 +2898,3 @@ def update_review_slice(request):
             "updated_at": slice_record.updated_at.isoformat() if slice_record.updated_at else None,
         }
     })
-

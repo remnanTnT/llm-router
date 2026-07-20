@@ -29,6 +29,7 @@ def test_refresh_user_info_dry_run(monkeypatch):
     output = out.getvalue()
     assert "-- GENERATED SQL COMMANDS --" in output
     assert "INSERT INTO user_ips" in output
+    assert "ON CONFLICT (ip_id) WHERE ip_id > 0" in output
     assert "127_0_0_1" in output
     assert "To run these commands manually against the database:" in output
     assert "psql -h <db_host>" in output

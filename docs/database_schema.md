@@ -43,6 +43,60 @@ user_ips -> departments.is_allowed -> whitelist.is_allowed
 
 When `admission.allow_when_user_info_missing` is true, missing `user_ips` data does not block the request.
 
+### API-Key Identity Foundation
+
+`user_ips` supports separate IP-backed and API-key-backed rows. An IP-backed row has `ip_id > 0` and an empty `apikey`; an API-key-backed row has `ip_id = 0` and a nonempty `apikey`. Nonzero IP IDs and nonempty API keys are individually unique, and an employee can have only one active API-key row.
+
+`user_ips.vip` is populated in this phase but is not yet used for request admission. `ips.vip` remains the active VIP-port gate until the request-identity rollout. Likewise, `requests.vip` is present but remains `FALSE`; current code continues to use `requests.user_ip_id = 2` for VIP accounting.
+
+Before applying the schema change, these preflight queries must return no rows:
+
+```sql
+SELECT id, ip_id FROM user_ips WHERE ip_id IS NULL OR ip_id <= 0;
+SELECT ip_id, COUNT(*) FROM user_ips WHERE ip_id > 0 GROUP BY ip_id HAVING COUNT(*) > 1;
+```
+
+Apply the table changes while writes are stopped. If the existing unconditional IP constraint has a nonstandard name, find it in `pg_constraint` and drop that name instead of `user_ips_ip_id_key`.
+
+```sql
+BEGIN;
+
+LOCK TABLE user_ips IN ACCESS EXCLUSIVE MODE;
+
+ALTER TABLE user_ips ADD COLUMN apikey VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE user_ips ADD COLUMN vip BOOLEAN NOT NULL DEFAULT FALSE;
+
+UPDATE user_ips AS user_row
+SET vip = ip_row.vip
+FROM ips AS ip_row
+WHERE user_row.ip_id = ip_row.id
+  AND user_row.ip_id > 0;
+
+ALTER TABLE user_ips DROP CONSTRAINT IF EXISTS user_ips_ip_id_key;
+ALTER TABLE user_ips ALTER COLUMN ip_id SET DEFAULT 0;
+ALTER TABLE user_ips ALTER COLUMN ip_id SET NOT NULL;
+ALTER TABLE user_ips ADD CONSTRAINT user_ips_credential_xor CHECK (
+    (ip_id > 0 AND apikey = '') OR (ip_id = 0 AND apikey <> '')
+);
+
+ALTER TABLE requests ADD COLUMN vip BOOLEAN NOT NULL DEFAULT FALSE;
+
+COMMIT;
+
+CREATE UNIQUE INDEX CONCURRENTLY uniq_user_ips_nonzero_ip
+    ON user_ips (ip_id) WHERE ip_id > 0;
+CREATE UNIQUE INDEX CONCURRENTLY uniq_user_ips_nonempty_apikey
+    ON user_ips (apikey) WHERE apikey <> '';
+CREATE UNIQUE INDEX CONCURRENTLY uniq_user_ips_active_emp_key
+    ON user_ips (employee_no)
+    WHERE apikey <> '' AND is_valid = TRUE AND deleted_at IS NULL;
+CREATE INDEX CONCURRENTLY idx_user_ips_employee_no ON user_ips (employee_no);
+CREATE INDEX CONCURRENTLY idx_req_vip_proc_model
+    ON requests (model_id) WHERE task_status = 'processing' AND vip = TRUE;
+```
+
+Do not convert historical `requests.user_ip_id` values or derive `requests.vip` in this phase. Rollback is safe only before API-key rows are registered; afterward, dropping `apikey` would destroy registered credentials.
+
 ## `models` Table
 
 Important model columns:
@@ -135,6 +189,7 @@ ALTER TABLE requests ADD COLUMN router_result VARCHAR(300) NULL;
 ALTER TABLE requests ADD COLUMN estimate_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN model_choosing_latency BIGINT NULL;
 ALTER TABLE requests ADD COLUMN ttft BIGINT NULL;
+ALTER TABLE requests ADD COLUMN vip BOOLEAN NOT NULL DEFAULT FALSE;
 ```
 
 `task_status` is one of the request lifecycle states used by the router, including `processing`, `success`, `failed`, `agent_disconnected`, and `incomplete`.

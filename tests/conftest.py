@@ -10,7 +10,7 @@ from django.db import connection
 
 django.setup()
 
-from router.models import Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP
+from router.models import Department, Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -18,7 +18,12 @@ def api_test_tables(django_db_setup, django_db_blocker):
     with django_db_blocker.unblock():
         existing_tables = connection.introspection.table_names()
         with connection.schema_editor() as schema_editor:
-            for model in (Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP):
+            if UserIP._meta.db_table in existing_tables and (
+                not has_column("user_ips", "apikey") or not has_column("user_ips", "vip")
+            ):
+                schema_editor.delete_model(UserIP)
+                schema_editor.create_model(UserIP)
+            for model in (Department, Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP):
                 if model._meta.db_table not in existing_tables:
                     schema_editor.create_model(model)
             if Ips._meta.db_table in connection.introspection.table_names() and not has_column("ips", "vip"):
@@ -58,6 +63,8 @@ def api_test_tables(django_db_setup, django_db_blocker):
                 schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("model_choosing_latency"))
             if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "ttft"):
                 schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("ttft"))
+            if RequestRecord._meta.db_table in connection.introspection.table_names() and not has_column("requests", "vip"):
+                schema_editor.add_field(RequestRecord, RequestRecord._meta.get_field("vip"))
             if Server._meta.db_table in connection.introspection.table_names() and not has_column("servers", "context_window"):
                 schema_editor.add_field(Server, Server._meta.get_field("context_window"))
         yield
@@ -80,3 +87,4 @@ def clean_api_tables(api_test_tables):
     MrLiveReview.objects.all().delete()
     DailyMrReview.objects.all().delete()
     UserIP.objects.all().delete()
+    Department.objects.all().delete()
