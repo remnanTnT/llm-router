@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from collections import defaultdict
 from pathlib import Path
 
@@ -26,8 +27,56 @@ from router.api.stats import (
 from router.models import Model, Server, ServerOperation
 from router.repositories.models import ModelRepository
 from router.repositories.requests import RequestRepository
+from router.repositories.user_ips import UserIPRepository
+from router.services.cmdb import CMDBService
 
 DOWNLOAD_FILE_PATH = Path("/home/AI_Assistant/AI_Assistant.exe")
+logger = logging.getLogger(__name__)
+
+
+@require_http_methods(["POST"])
+def register_apikey(request):
+    try:
+        data = json.loads(request.body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return _bad_request("invalid JSON body")
+
+    if not isinstance(data, dict):
+        return _bad_request("JSON body must be an object")
+
+    apikey = data.get("apikey")
+    employee_no = data.get("employee_no")
+    if not isinstance(apikey, str) or not apikey.strip():
+        return _bad_request("apikey is required")
+    if not isinstance(employee_no, str) or not employee_no.strip():
+        return _bad_request("employee_no is required")
+
+    apikey = apikey.strip()
+    employee_no = employee_no.strip()
+    if len(apikey) > 255:
+        return _bad_request("apikey must be at most 255 characters")
+    if len(employee_no) > 50:
+        return _bad_request("employee_no must be at most 50 characters")
+
+    try:
+        CMDBService().fetch_and_save_apikey(apikey, employee_no)
+    except NotImplementedError:
+        return JsonResponse({"code": 404, "error": "API key registration is not implemented"}, status=404)
+    except LookupError:
+        return JsonResponse({"code": 404, "error": "employee_no not found"}, status=404)
+    except Exception:
+        logger.exception("CMDB API key registration failed for employee %s", employee_no)
+        return JsonResponse({"code": 502, "error": "CMDB API key registration failed"}, status=502)
+
+    return JsonResponse(
+        {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "employee_no": employee_no,
+            },
+        }
+    )
 
 
 @require_http_methods(["GET"])
@@ -1130,12 +1179,9 @@ def update_concurrent_multiplier(request):
         if not employee_no:
             return _bad_request("employee_no cannot be empty")
 
-        user_ip = UserIPRepository.get_by_employee_no(employee_no)
+        user_ip = UserIPRepository.get_ip_backed_by_employee_no(employee_no)
         if not user_ip:
             return JsonResponse({"code": 404, "error": "employee_no not found"}, status=404)
-
-        if user_ip.ip_id is None:
-            return JsonResponse({"code": 404, "error": "ip_id not found for this employee"}, status=404)
 
         try:
             ip_obj = IPRepository.update_concurrent_multiplier(user_ip.ip_id, multiplier_value)
@@ -2840,4 +2886,3 @@ def update_review_slice(request):
             "updated_at": slice_record.updated_at.isoformat() if slice_record.updated_at else None,
         }
     })
-

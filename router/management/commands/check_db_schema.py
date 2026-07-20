@@ -109,6 +109,14 @@ class Command(BaseCommand):
                     with connection.schema_editor() as schema_editor:
                         schema_editor.execute(sql)
 
+        for table, constraints in drift["missing_constraints"].items():
+            model = {m._meta.db_table: m for m in models}[table]
+            for constraint in constraints:
+                sql = self._create_constraint_sql(model, constraint)
+                self.stdout.write(sql)
+                if not dry_run:
+                    self._execute_schema_sql(sql)
+
         for table, indexes in drift["missing_indexes"].items():
             model = {m._meta.db_table: m for m in models}[table]
             for index in indexes:
@@ -127,6 +135,7 @@ class Command(BaseCommand):
             "nullable_mismatches": {},
             "type_mismatches": {},
             "unique_mismatches": {},
+            "missing_constraints": {},
             "missing_indexes": {},
         }
         expected_tables = {model._meta.db_table: model for model in models}
@@ -169,6 +178,10 @@ class Command(BaseCommand):
                 unique_mismatches = self._unique_mismatches(cursor, table, model, actual_columns)
                 if unique_mismatches:
                     drift["unique_mismatches"][table] = unique_mismatches
+
+                missing_constraints = self._missing_constraints(cursor, table, model)
+                if missing_constraints:
+                    drift["missing_constraints"][table] = missing_constraints
 
                 missing_indexes = self._missing_indexes(cursor, table, model)
                 if missing_indexes:
@@ -319,6 +332,7 @@ class Command(BaseCommand):
               AND n.nspname = current_schema()
               AND i.indisunique = true
               AND i.indisprimary = false
+              AND i.indpred IS NULL
               AND array_length(i.indkey, 1) = 1
             """,
             [table],
@@ -419,6 +433,15 @@ class Command(BaseCommand):
     def _create_index_sql(self, model, index):
         with connection.schema_editor() as schema_editor:
             sql = str(index.create_sql(model, schema_editor))
+        return self._concurrent_index_sql(sql)
+
+    def _create_constraint_sql(self, model, constraint):
+        with connection.schema_editor() as schema_editor:
+            sql = str(constraint.create_sql(model, schema_editor))
+        return self._concurrent_index_sql(sql)
+
+    @staticmethod
+    def _concurrent_index_sql(sql):
         sql = sql.rstrip(";")
         if connection.vendor == "postgresql":
             if sql.startswith("CREATE INDEX "):
@@ -427,7 +450,7 @@ class Command(BaseCommand):
                 sql = sql.replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ", 1)
         return sql + ";"
 
-    def _execute_index_sql(self, sql):
+    def _execute_schema_sql(self, sql):
         if connection.vendor != "postgresql" or " CONCURRENTLY " not in sql:
             with connection.schema_editor() as schema_editor:
                 schema_editor.execute(sql)
@@ -442,6 +465,9 @@ class Command(BaseCommand):
         finally:
             if not old_autocommit:
                 connection.set_autocommit(False)
+
+    def _execute_index_sql(self, sql):
+        self._execute_schema_sql(sql)
 
     def _write_drift(self, drift):
         if drift["missing_tables"]:
@@ -476,9 +502,20 @@ class Command(BaseCommand):
                 else:
                     self.stderr.write(f"Extra unique constraint in {table}.{column}")
 
+        for table, constraints in drift["missing_constraints"].items():
+            for constraint in constraints:
+                self.stderr.write(f"Missing constraint in {table}: {constraint.name}")
+
         for table, indexes in drift["missing_indexes"].items():
             for index in indexes:
                 self.stderr.write(f"Missing index in {table}: {index.name}")
+
+    def _missing_constraints(self, cursor, table, model):
+        if connection.vendor != "postgresql":
+            return []
+
+        existing = connection.introspection.get_constraints(cursor, table)
+        return [constraint for constraint in model._meta.constraints if constraint.name not in existing]
 
     def _missing_indexes(self, cursor, table, model):
         if connection.vendor != "postgresql":

@@ -78,6 +78,7 @@ A Django + Gunicorn based reverse-proxy / API gateway that sits in front of one 
 
 - **Management & Admin APIs**
   - `POST /api/whitelist/update` — upsert whitelist entry by `employee_no`
+  - `POST /api/apikey` — register or rotate an employee API key (storage only; proxy identity support is deferred)
   - `POST /api/refresh_user_info` — kick off CMDB user refresh thread (requires `cmdb.enabled`)
   - `POST /api/add_server` — register a new upstream server after verifying its `/models`
   - `POST /api/mr_live_review` and `POST /api/codehub_review` — ingest review records for reporting

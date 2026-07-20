@@ -160,6 +160,34 @@ curl -i -X POST http://localhost:8001/api/whitelist/update \
 
 `is_allowed` must be `0` or `1`.
 
+## API-Key Registration
+
+```http
+POST /api/apikey
+```
+
+Requests registration of an employee API key. This endpoint is unauthenticated and must not be exposed to untrusted callers. Keys are never returned in the response.
+
+```bash
+curl -i -X POST http://localhost:8001/api/apikey \
+  -H 'Content-Type: application/json' \
+  -d '{"apikey":"employee-key","employee_no":"E001"}'
+```
+
+After validating the JSON fields, the endpoint delegates lookup and all database writes to `CMDBService.fetch_and_save_apikey(apikey, employee_no)`. The internal CMDB adapter owns employee lookup, department data, VIP inheritance, idempotency, conflict handling, and key rotation. The public CMDB adapter is unimplemented, so the endpoint returns HTTP 404 until an internal adapter provides this method.
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "employee_no": "E001"
+  }
+}
+```
+
+This first-stage endpoint only stores credentials. Proxy requests do not resolve or apply registered API keys yet.
+
 ## Whitelist List
 
 ```http
@@ -2076,4 +2104,3 @@ Example - combined filters:
 ```bash
 curl 'http://localhost:8001/api/ai_assistant_user_feedback/list?domain=知识管理&status=open&priority=高&page=1&page_size=20'
 ```
-

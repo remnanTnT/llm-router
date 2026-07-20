@@ -77,6 +77,28 @@ def test_update_by_employee_no_success(client, setup_test_data):
 
 
 @pytest.mark.django_db
+def test_update_by_employee_no_ignores_key_only_row(client, setup_test_data):
+    UserIP.objects.create(
+        ip_id=0,
+        apikey="employee-key",
+        employee_no="EMP001",
+        is_valid=True,
+    )
+
+    response = client.post(
+        "/api/concurrent_multiplier/update",
+        data=json.dumps({
+            "employee_no": "EMP001",
+            "concurrent_multiplier": 2.5,
+        }),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["ip"] == "192.168.1.100"
+
+
+@pytest.mark.django_db
 def test_update_by_employee_no_not_found(client, setup_test_data):
     """测试工号不存在"""
     response = client.post(

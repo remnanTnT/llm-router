@@ -21,6 +21,9 @@ class CMDBService:
             return
         logger.info("CMDB dummy mode: no user data fetched for %s", ip)
 
+    def fetch_and_save_apikey(self, apikey: str, employee_no: str) -> None:
+        raise NotImplementedError("API key registration is not implemented in the public CMDB adapter")
+
     def fetch_all_users(self) -> None:
         for row in IPRepository.all_active():
             self.fetch_and_save_user(row.ip)

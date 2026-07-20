@@ -83,7 +83,7 @@ class Command(BaseCommand):
         return (
             f"INSERT INTO user_ips (ip_id, user_name, user_charge, employee_no, department_id, is_valid, created_at, updated_at) "
             f"VALUES ({ip_id}, '{user_name}', '{user_charge}', '{employee_no}', {dept_val}, true, '{now_str}', '{now_str}') "
-            f"ON CONFLICT (ip_id) DO UPDATE SET "
+            f"ON CONFLICT (ip_id) WHERE ip_id > 0 DO UPDATE SET "
             f"user_name = EXCLUDED.user_name, "
             f"user_charge = EXCLUDED.user_charge, "
             f"employee_no = EXCLUDED.employee_no, "

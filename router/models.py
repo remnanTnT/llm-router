@@ -35,7 +35,9 @@ class Department(TimestampedSoftDeleteModel):
 
 
 class UserIP(TimestampedSoftDeleteModel):
-    ip_id = models.IntegerField(unique=True, blank=True, null=True)
+    ip_id = models.IntegerField(default=0)
+    apikey = models.CharField(max_length=255, blank=True, default="")
+    vip = models.BooleanField(default=False)
     user_name = models.CharField(max_length=100, blank=True, default="")
     user_charge = models.CharField(max_length=100, blank=True, default="")
     department_id = models.IntegerField(blank=True, null=True)
@@ -45,6 +47,30 @@ class UserIP(TimestampedSoftDeleteModel):
     class Meta:
         managed = False
         db_table = "user_ips"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ip_id"],
+                condition=Q(ip_id__gt=0),
+                name="uniq_user_ips_nonzero_ip",
+            ),
+            models.UniqueConstraint(
+                fields=["apikey"],
+                condition=~Q(apikey=""),
+                name="uniq_user_ips_nonempty_apikey",
+            ),
+            models.UniqueConstraint(
+                fields=["employee_no"],
+                condition=~Q(apikey="") & Q(is_valid=True, deleted_at__isnull=True),
+                name="uniq_user_ips_active_emp_key",
+            ),
+            models.CheckConstraint(
+                check=Q(ip_id__gt=0, apikey="") | (Q(ip_id=0) & ~Q(apikey="")),
+                name="user_ips_credential_xor",
+            ),
+        ]
+        indexes = [
+            models.Index(name="idx_user_ips_employee_no", fields=["employee_no"]),
+        ]
 
 
 class Model(models.Model):
@@ -90,6 +116,7 @@ class Server(TimestampedSoftDeleteModel):
 
 class RequestRecord(TimestampedSoftDeleteModel):
     user_ip_id = models.IntegerField()
+    vip = models.BooleanField(default=False)
     ip_id = models.IntegerField(blank=True, null=True)
     send_time = models.DateTimeField()
     end_time = models.DateTimeField(blank=True, null=True)
@@ -130,6 +157,11 @@ class RequestRecord(TimestampedSoftDeleteModel):
                 name="idx_requests_processing_target",
                 fields=["target_pod_ip"],
                 condition=Q(task_status="processing"),
+            ),
+            models.Index(
+                name="idx_req_vip_proc_model",
+                fields=["model_id"],
+                condition=Q(task_status="processing", vip=True),
             ),
             models.Index(
                 name="idx_requests_success_send",
