@@ -166,7 +166,7 @@ curl -i -X POST http://localhost:8001/api/whitelist/update \
 POST /api/apikey
 ```
 
-Registers an API-key-backed `user_ips` row for an employee. This endpoint is unauthenticated and must not be exposed to untrusted callers. Keys are stored as supplied but are never returned in the response.
+Requests registration of an employee API key. This endpoint is unauthenticated and must not be exposed to untrusted callers. Keys are never returned in the response.
 
 ```bash
 curl -i -X POST http://localhost:8001/api/apikey \
@@ -174,19 +174,14 @@ curl -i -X POST http://localhost:8001/api/apikey \
   -d '{"apikey":"employee-key","employee_no":"E001"}'
 ```
 
-The endpoint retrieves `user_charge` and `dept1` through `dept4` from `CMDBService.fetch_user_data_by_employee_no`. The public CMDB adapter is unimplemented, so it returns HTTP 404 until an internal adapter provides the lookup.
-
-Posting the current key/employee pair is idempotent. Posting a different key soft-deletes the employee's previous key row and inserts a new row. A key already present anywhere in `user_ips`, including an inactive historical row, returns HTTP 409.
+After validating the JSON fields, the endpoint delegates lookup and all database writes to `CMDBService.fetch_and_save_apikey(apikey, employee_no)`. The internal CMDB adapter owns employee lookup, department data, VIP inheritance, idempotency, conflict handling, and key rotation. The public CMDB adapter is unimplemented, so the endpoint returns HTTP 404 until an internal adapter provides this method.
 
 ```json
 {
   "code": 200,
-  "message": "created",
+  "message": "success",
   "data": {
-    "user_ip_id": 42,
-    "employee_no": "E001",
-    "vip": false,
-    "operation": "created"
+    "employee_no": "E001"
   }
 }
 ```

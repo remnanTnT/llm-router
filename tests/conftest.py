@@ -10,7 +10,7 @@ from django.db import connection
 
 django.setup()
 
-from router.models import Department, Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP
+from router.models import Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -23,7 +23,7 @@ def api_test_tables(django_db_setup, django_db_blocker):
             ):
                 schema_editor.delete_model(UserIP)
                 schema_editor.create_model(UserIP)
-            for model in (Department, Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP):
+            for model in (Ips, Model, RequestRecord, Server, Whitelist, ServerOperation, MrLiveReview, DailyMrReview, UserIP):
                 if model._meta.db_table not in existing_tables:
                     schema_editor.create_model(model)
             if Ips._meta.db_table in connection.introspection.table_names() and not has_column("ips", "vip"):
@@ -87,4 +87,3 @@ def clean_api_tables(api_test_tables):
     MrLiveReview.objects.all().delete()
     DailyMrReview.objects.all().delete()
     UserIP.objects.all().delete()
-    Department.objects.all().delete()
